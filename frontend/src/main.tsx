@@ -13,7 +13,7 @@ import { Droplets, MapPin, Plus, Route, Search, ShieldAlert, Trash2 } from "luci
 import "leaflet/dist/leaflet.css";
 import "./styles.css";
 
-const API = "http://localhost:8000/api";
+const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8001/api";
 const CENTER: [number, number] = [40.195, -75.425];
 
 type FeatureCollection = GeoJSON.FeatureCollection;
