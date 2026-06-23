@@ -26,8 +26,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def ensure_manual_csv(path: Path = MANUAL_HYDRANTS_CSV) -> None:
-    ensure_data_dirs()
+def _path(path: Path | None = None) -> Path:
+    return path or MANUAL_HYDRANTS_CSV
+
+
+def ensure_manual_csv(path: Path | None = None) -> None:
+    path = _path(path)
+    if path == MANUAL_HYDRANTS_CSV:
+        ensure_data_dirs()
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         return
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -48,13 +56,15 @@ def _coerce(row: dict[str, str]) -> ManualHydrant:
     )
 
 
-def list_manual_hydrants(path: Path = MANUAL_HYDRANTS_CSV) -> list[ManualHydrant]:
+def list_manual_hydrants(path: Path | None = None) -> list[ManualHydrant]:
+    path = _path(path)
     ensure_manual_csv(path)
     with path.open("r", newline="", encoding="utf-8") as f:
         return [_coerce(row) for row in csv.DictReader(f) if row.get("manual_id")]
 
 
-def _write_all(records: list[ManualHydrant], path: Path = MANUAL_HYDRANTS_CSV) -> None:
+def _write_all(records: list[ManualHydrant], path: Path | None = None) -> None:
+    path = _path(path)
     ensure_manual_csv(path)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
@@ -107,4 +117,3 @@ def manual_hydrants_geojson(path: Path) -> dict:
         if rec.status == "active"
     ]
     return write_geojson(path, features)
-

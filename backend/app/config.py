@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2].parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = REPO_ROOT / "data"
 MANUAL_DIR = DATA_ROOT / "manual"
 GENERATED_DIR = DATA_ROOT / "generated"
@@ -51,4 +51,3 @@ ROAD_GRAPH_SUMMARY_JSON = GENERATED_DIR / "road_graph_summary.json"
 def ensure_data_dirs() -> None:
     MANUAL_DIR.mkdir(parents=True, exist_ok=True)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-
