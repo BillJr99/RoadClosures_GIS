@@ -27,13 +27,28 @@ def fetch_osm_hydrants(
 ) -> list[dict[str, Any]]:
     west, south, east, north = bbox
     query = (
-        "[out:json];"
+        "[out:json][timeout:90];"
         f'node["emergency"="fire_hydrant"]({south},{west},{north},{east});'
         "out;"
     )
     requester = session.post if session else requests.post
-    response = requester(SOURCES.overpass_url, data={"data": query}, timeout=90)
-    response.raise_for_status()
+    response = None
+    last_error: Exception | None = None
+    for url in (SOURCES.overpass_url, SOURCES.overpass_fallback_url):
+        try:
+            response = requester(
+                url,
+                data={"data": query},
+                headers={"User-Agent": "fire-police-gis-cordon-planner/0.1"},
+                timeout=120,
+            )
+            response.raise_for_status()
+            break
+        except Exception as e:
+            last_error = e
+            response = None
+    if response is None:
+        raise RuntimeError(f"OSM Overpass hydrant fetch failed: {last_error}")
     elements = response.json().get("elements", [])
     features: list[dict[str, Any]] = []
     for el in elements:
@@ -161,7 +176,11 @@ def reconcile_hydrants(authoritative: list[dict[str, Any]], manual: list[dict[st
 
 def generate_hydrant_layers(bbox: tuple[float, float, float, float] = SOURCES.bbox_wgs84) -> dict[str, int]:
     with requests.Session() as session:
-        authoritative = fetch_npwa_hydrants(bbox, session=session) + fetch_osm_hydrants(bbox, session=session)
+        authoritative = fetch_npwa_hydrants(bbox, session=session)
+        try:
+            authoritative += fetch_osm_hydrants(bbox, session=session)
+        except Exception as e:
+            print(f"[hydrants] OSM Overpass unavailable; continuing with authority/manual sources: {e}")
     write_geojson(AUTHORITATIVE_HYDRANTS_GEOJSON, authoritative)
     manual_payload = manual_hydrants_geojson(MANUAL_HYDRANTS_GEOJSON)
     manual = manual_payload["features"]

@@ -21,6 +21,7 @@ class SourceConfig:
         "Voters/Montgomery_County_Voting_Districts/FeatureServer/1"
     )
     overpass_url: str = "https://overpass-api.de/api/interpreter"
+    overpass_fallback_url: str = "https://overpass.kumi.systems/api/interpreter"
     npwa_mapserver_base: str = "https://gis.lansdale.org/arcgis/rest/services/NPWA/MapServer"
     epqs_url: str = "https://epqs.nationalmap.gov/v1/json"
     nominatim_url: str = "https://nominatim.openstreetmap.org/search"
