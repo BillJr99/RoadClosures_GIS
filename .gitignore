@@ -8,6 +8,7 @@ node_modules/
 dist/
 build/
 .vite/
+cache/
 test-results/
 playwright-report/
 backend/data/generated/
