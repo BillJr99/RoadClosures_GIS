@@ -74,6 +74,30 @@ The script uses the same prototype data sources documented in the project plan:
 Montgomery County Streets, OSMnx/OpenStreetMap roads, OSM Overpass hydrants,
 Lansdale/NPWA authority hydrant layers, and the manual hydrant CSV.
 
+## Test Suite
+
+Run the full backend, frontend, and browser orchestration suite:
+
+```bash
+scripts/test_all.sh
+```
+
+The script runs:
+
+- backend unit/API tests with `pytest`
+- frontend unit tests with `vitest`
+- frontend production build with Vite/TypeScript
+- Playwright browser orchestration tests that mock API responses and exercise
+  layer loading, address search, manual hydrant add/remove, rebuild action, and
+  closure recommendation rendering
+
+If Playwright browsers are missing, install them once:
+
+```bash
+cd frontend
+npx playwright install chromium
+```
+
 The backend serves API endpoints for GIS layer generation, manual hydrant
 editing, geocoding, and incident planning. The frontend is a React + Leaflet map
 that consumes those APIs.

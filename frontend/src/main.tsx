@@ -12,6 +12,7 @@ import L from "leaflet";
 import { Droplets, MapPin, Plus, Route, Search, ShieldAlert, Trash2 } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import "./styles.css";
+import { formatCoords } from "./format";
 
 const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8001/api";
 const CENTER: [number, number] = [40.195, -75.425];
@@ -179,7 +180,7 @@ function App() {
             <button onClick={geocodeAddress} title="Search address"><Search size={18} /></button>
           </div>
           <div className="coords">
-            {incident ? `${incident.lat.toFixed(6)}, ${incident.lon.toFixed(6)}` : "Click the map to set incident"}
+            {incident ? formatCoords(incident.lat, incident.lon) : "Click the map to set incident"}
           </div>
           <button className="primary" onClick={runPlan}><ShieldAlert size={18} /> Recommend Closures</button>
         </section>
