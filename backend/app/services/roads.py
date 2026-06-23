@@ -17,7 +17,7 @@ def generate_county_roads_layer(
         features = fetch_geojson_features(
             SOURCES.streets_url,
             bbox=bbox,
-            out_fields="OBJECTID,St_Name,Post_Comm,SpeedLimit,RoadClass,OneWay,Shape__Length",
+            out_fields="*",
             session=session,
         )
     for feature in features:
@@ -59,4 +59,3 @@ def generate_road_layers(
     if include_graph:
         graph_summary = generate_osmnx_graph(bbox)
     return {"roads": road_count, "graph": graph_summary}
-

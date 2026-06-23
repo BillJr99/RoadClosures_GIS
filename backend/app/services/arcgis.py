@@ -70,9 +70,12 @@ def fetch_geojson_features(
             },
             session=session,
         )
+        if "error" in payload:
+            raise RuntimeError(f"ArcGIS query failed for {layer_url}: {payload['error']}")
+        if payload.get("type") != "FeatureCollection":
+            raise RuntimeError(f"ArcGIS query did not return GeoJSON for {layer_url}: {str(payload)[:300]}")
         page = payload.get("features") or []
         if not page:
             break
         features.extend(page)
     return features
-
