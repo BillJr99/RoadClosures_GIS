@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query
 from app.config import RECONCILED_HYDRANTS_GEOJSON, ROADS_GEOJSON, SOURCES
 from app.geojson import read_geojson
 from app.services.geocode import geocode
-from app.services.hydrants import generate_hydrant_layers
+from app.services.hydrants import current_reconciled_hydrants, generate_hydrant_layers
 from app.services.roads import generate_road_layers
 
 router = APIRouter(tags=["layers"])
@@ -16,7 +16,7 @@ def roads_layer() -> dict:
 
 @router.get("/layers/hydrants")
 def hydrants_layer() -> dict:
-    return read_geojson(RECONCILED_HYDRANTS_GEOJSON)
+    return current_reconciled_hydrants()
 
 
 @router.post("/layers/build")

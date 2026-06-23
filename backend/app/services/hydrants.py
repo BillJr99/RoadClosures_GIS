@@ -6,7 +6,7 @@ from typing import Any
 import requests
 
 from app.config import SOURCES, AUTHORITATIVE_HYDRANTS_GEOJSON, MANUAL_HYDRANTS_GEOJSON, RECONCILED_HYDRANTS_GEOJSON
-from app.geojson import point_feature, write_geojson
+from app.geojson import point_feature, read_geojson, write_geojson
 from app.manual_store import manual_hydrants_geojson
 from app.services.arcgis import fetch_geojson_features, layer_info
 
@@ -173,3 +173,9 @@ def generate_hydrant_layers(bbox: tuple[float, float, float, float] = SOURCES.bb
         "reconciled": len(reconciled),
     }
 
+
+def current_reconciled_hydrants() -> dict[str, Any]:
+    authoritative = read_geojson(AUTHORITATIVE_HYDRANTS_GEOJSON)["features"]
+    manual = manual_hydrants_geojson(MANUAL_HYDRANTS_GEOJSON)["features"]
+    reconciled = reconcile_hydrants(authoritative, manual)
+    return write_geojson(RECONCILED_HYDRANTS_GEOJSON, reconciled)
