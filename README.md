@@ -29,6 +29,51 @@ npm run dev
 The frontend defaults to `http://localhost:8001/api`. Override it with
 `VITE_API_BASE` if you run the backend elsewhere.
 
+## Rebuilding GIS Data
+
+Generated road and hydrant artifacts live under `data/generated/` and are
+ignored by git because they can be large and are reproducible from the source
+services plus `data/manual/manual_hydrants.csv`.
+
+Install backend dependencies first:
+
+```bash
+cd backend
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cd ..
+```
+
+Rebuild everything:
+
+```bash
+scripts/rebuild_gis_data.sh all
+```
+
+Rebuild only fire hydrants after editing manual hydrants or when authority/OSM
+hydrant data should be refreshed:
+
+```bash
+scripts/rebuild_gis_data.sh hydrants
+```
+
+Rebuild only roads:
+
+```bash
+scripts/rebuild_gis_data.sh roads
+```
+
+For a faster road layer refresh that skips the OSMnx routing graph:
+
+```bash
+scripts/rebuild_gis_data.sh roads --skip-graph
+```
+
+The script uses the same prototype data sources documented in the project plan:
+Montgomery County Streets, OSMnx/OpenStreetMap roads, OSM Overpass hydrants,
+Lansdale/NPWA authority hydrant layers, and the manual hydrant CSV.
+
 The backend serves API endpoints for GIS layer generation, manual hydrant
 editing, geocoding, and incident planning. The frontend is a React + Leaflet map
 that consumes those APIs.
