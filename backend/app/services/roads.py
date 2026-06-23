@@ -17,7 +17,8 @@ def generate_county_roads_layer(
         features = fetch_geojson_features(
             SOURCES.streets_url,
             bbox=bbox,
-            out_fields="*",
+            out_fields="OBJECTID,Status,FuncClass,Owner,Seg_ID,St_Name,St_PosTyp,St_PosDir,HwyNum",
+            progress_label="roads",
             session=session,
         )
     for feature in features:

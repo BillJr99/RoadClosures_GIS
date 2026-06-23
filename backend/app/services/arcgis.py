@@ -31,6 +31,7 @@ def fetch_geojson_features(
     bbox: tuple[float, float, float, float],
     out_fields: str = "*",
     where: str = "1=1",
+    progress_label: str | None = None,
     session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
     west, south, east, north = bbox
@@ -78,4 +79,6 @@ def fetch_geojson_features(
         if not page:
             break
         features.extend(page)
+        if progress_label:
+            print(f"[{progress_label}] fetched {len(features):,}/{total:,}")
     return features
