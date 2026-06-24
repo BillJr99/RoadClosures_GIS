@@ -13,6 +13,7 @@ import {
   Check,
   Droplets,
   FileCheck2,
+  Flag,
   MapPin,
   Pencil,
   Play,
@@ -66,11 +67,14 @@ type PlanResponse = {
   hose_route: GeoJSON.Feature;
   closures: FeatureCollection;
   overlays: FeatureCollection;
+  warning_signs?: FeatureCollection;
+  graph_source?: Record<string, unknown>;
   ranked_closures: Array<Record<string, unknown>>;
   hydrant_candidates: Array<Record<string, unknown>>;
 };
 
 type ScenarioRunResult = {
+  run_id?: string;
   run_dir: string;
   report_path: string;
   results: Array<{
@@ -81,6 +85,15 @@ type ScenarioRunResult = {
     differences: string[];
     error?: string;
   }>;
+};
+
+type ScenarioRunListItem = {
+  run_id: string;
+  report_path: string;
+  result_count: number;
+  failed_count: number;
+  changed_count: number;
+  missing_count: number;
 };
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -114,6 +127,8 @@ function App() {
   const [address, setAddress] = useState("");
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [scenarioRun, setScenarioRun] = useState<ScenarioRunResult | null>(null);
+  const [scenarioRuns, setScenarioRuns] = useState<ScenarioRunListItem[]>([]);
+  const [pendingPromoteRunId, setPendingPromoteRunId] = useState<string | null>(null);
   const [message, setMessage] = useState("Load generated layers, then pick an incident.");
   const [manualDraft, setManualDraft] = useState({
     name: "",
@@ -135,16 +150,18 @@ function App() {
   });
 
   async function loadLayers() {
-    const [roadLayer, hydrantLayer, manual, scenarioRecords] = await Promise.all([
+    const [roadLayer, hydrantLayer, manual, scenarioRecords, runRecords] = await Promise.all([
       jsonFetch<FeatureCollection>(`${API}/layers/roads`),
       jsonFetch<FeatureCollection>(`${API}/layers/hydrants`),
       jsonFetch<ManualHydrant[]>(`${API}/manual-hydrants`),
       jsonFetch<Scenario[]>(`${API}/scenarios`),
+      jsonFetch<ScenarioRunListItem[]>(`${API}/scenario-runs`).catch(() => []),
     ]);
     setRoads(roadLayer);
     setHydrants(hydrantLayer);
     setManualHydrants(manual);
     setScenarios(scenarioRecords);
+    setScenarioRuns(runRecords);
     setMessage(
       `${roadLayer.features.length} roads, ${hydrantLayer.features.length} hydrants, ${manual.length} manual hydrants, ${scenarioRecords.length} scenarios loaded.`,
     );
@@ -153,6 +170,11 @@ function App() {
   async function loadScenarios() {
     const scenarioRecords = await jsonFetch<Scenario[]>(`${API}/scenarios`);
     setScenarios(scenarioRecords);
+  }
+
+  async function loadScenarioRuns() {
+    const runRecords = await jsonFetch<ScenarioRunListItem[]>(`${API}/scenario-runs`);
+    setScenarioRuns(runRecords);
   }
 
   async function buildLayers() {
@@ -294,9 +316,40 @@ function App() {
   async function runScenario(id: string) {
     const result = await jsonFetch<ScenarioRunResult>(`${API}/scenarios/${id}/run`, { method: "POST" });
     setScenarioRun(result);
+    await loadScenarioRuns();
     const first = result.results[0];
     const status = first ? `${first.status}, golden ${first.golden_status}` : "no active scenario run";
     setMessage(`Scenario run complete: ${status}.`);
+  }
+
+  async function viewScenarioRun(runId: string) {
+    const result = await jsonFetch<ScenarioRunResult>(`${API}/scenario-runs/${runId}`);
+    setScenarioRun(result);
+    setPendingPromoteRunId(null);
+    setMessage(`Loaded scenario run ${runId}.`);
+  }
+
+  async function loadScenarioPlan(runId: string, scenarioId: string) {
+    const saved = await jsonFetch<{ plan: PlanResponse; scenario: Scenario }>(
+      `${API}/scenario-runs/${runId}/scenarios/${scenarioId}`,
+    );
+    setPlan(saved.plan);
+    setIncident({ lat: saved.scenario.lat, lon: saved.scenario.lon });
+    setMessage(`Loaded saved plan for ${saved.scenario.name}.`);
+  }
+
+  async function promoteScenarioRun(runId: string) {
+    if (pendingPromoteRunId !== runId) {
+      setPendingPromoteRunId(runId);
+      setMessage(`Review run ${runId}, then confirm promotion.`);
+      return;
+    }
+    const result = await jsonFetch<{ promoted_count: number }>(`${API}/scenario-runs/${runId}/promote`, {
+      method: "POST",
+    });
+    setPendingPromoteRunId(null);
+    await loadScenarioRuns();
+    setMessage(`Promoted ${result.promoted_count} scenario summaries.`);
   }
 
   async function addManualHydrant() {
@@ -457,6 +510,42 @@ function App() {
         </section>
 
         <section className="panel">
+          <h2><FileCheck2 size={18} /> Scenario Runs</h2>
+          <button onClick={loadScenarioRuns}>Reload Runs</button>
+          <div className="list">
+            {scenarioRuns.map((run) => (
+              <div className="scenario-row" key={run.run_id}>
+                <div>
+                  <strong>{run.run_id}</strong>
+                  <span>
+                    {run.result_count} result(s) · {run.failed_count} failed · {run.changed_count} changed · {run.missing_count} missing
+                  </span>
+                </div>
+                <div className="row-actions three-actions">
+                  <button onClick={() => viewScenarioRun(run.run_id)} title="Review run"><Search size={16} /></button>
+                  <button onClick={() => promoteScenarioRun(run.run_id)} title="Promote run">
+                    {pendingPromoteRunId === run.run_id ? <Check size={16} /> : <FileCheck2 size={16} />}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          {scenarioRun?.run_id && (
+            <div className="scenario-result">
+              <strong>Review {scenarioRun.run_id}</strong>
+              {scenarioRun.results.map((result) => (
+                <button
+                  key={result.scenario_id}
+                  onClick={() => loadScenarioPlan(scenarioRun.run_id!, result.scenario_id)}
+                >
+                  <MapPin size={16} /> {result.name}: {result.status}, golden {result.golden_status}
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel">
           <h2><Route size={18} /> Layers</h2>
           <button onClick={loadLayers}>Reload Layers</button>
           <button onClick={buildLayers}>Build From Sources</button>
@@ -471,9 +560,16 @@ function App() {
                   <strong>#{String(closure.rank)} {String(closure.name)}</strong>
                   <span>{String(closure.reason)}</span>
                   <span>Cost {String(closure.capacity)} · {String(closure.sightline)}</span>
+                  {Boolean(closure.county_st_name) && <span>County match: {String(closure.county_st_name)} ({String(closure.county_match_confidence)})</span>}
                 </div>
               ))}
             </div>
+            {plan.warning_signs && (
+              <div className="scenario-result">
+                <strong><Flag size={16} /> MUTCD advisory signs</strong>
+                <span>{plan.warning_signs.features.length} candidate sign location(s)</span>
+              </div>
+            )}
           </section>
         )}
       </aside>
@@ -485,6 +581,7 @@ function App() {
           {roads && <GeoJSON data={roads} style={{ color: "#74808c", weight: 1, opacity: 0.6 }} />}
           {hydrants && <GeoJSON data={hydrants} pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 4, color: "#1677a3", fillOpacity: 0.8 })} />}
           {plan && <GeoJSON data={plan.overlays} style={{ color: "#d9480f", weight: 5 }} />}
+          {plan?.warning_signs && <GeoJSON data={plan.warning_signs} pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 6, color: "#7c3aed", fillOpacity: 0.9 })} />}
           {incident && <Marker position={[incident.lat, incident.lon]}><Tooltip>Incident</Tooltip></Marker>}
           {selectedHydrant && <Marker position={[selectedHydrant.lat, selectedHydrant.lon]}><Tooltip>Selected hydrant</Tooltip></Marker>}
         </MapContainer>

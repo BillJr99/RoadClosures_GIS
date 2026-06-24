@@ -104,11 +104,30 @@ To include real scenario validation in the full suite:
 RUN_SCENARIOS=1 scripts/test_all.sh
 ```
 
+To launch a headed browser demonstration that slowly walks through the main app
+workflow with mocked API responses:
+
+```bash
+scripts/demo_browser.sh
+```
+
+Adjust the pace:
+
+```bash
+DEMO_STEP_MS=2000 DEMO_SLOW_MO_MS=400 scripts/demo_browser.sh
+```
+
 For live scenario validation, build a local GraphML artifact around the active
 scenario locations first:
 
 ```bash
 scripts/build_scenario_graph.sh
+```
+
+To warm the incident-local graph cache used by the planner:
+
+```bash
+scripts/build_graph_cache.sh
 ```
 
 ## Scenario Validation
@@ -161,6 +180,7 @@ Refresh the local scenario graph after adding or moving scenarios:
 ```bash
 scripts/build_scenario_graph.sh
 scripts/build_scenario_graph.sh --scenario-id scenario-norristown-main
+scripts/build_graph_cache.sh
 ```
 
 Run all active scenarios:
@@ -192,6 +212,60 @@ nonzero so planner regressions are visible in the test suite.
 previously approved golden summary changes. Missing goldens are reported so the
 first reviewed run can be promoted.
 
+### Reviewing Scenario Runs
+
+After running `scripts/run_scenarios.sh` or `RUN_SCENARIOS=1 scripts/test_all.sh`,
+review the newest directory under `data/scenario_runs/`. You can review the same
+run in the app from the Scenario Runs panel, or directly from the files.
+
+Start with:
+
+```bash
+data/scenario_runs/<timestamp>/report.html
+```
+
+The report gives a quick pass/fail and golden comparison for each scenario. A
+missing golden means the scenario has not been accepted as a baseline yet. A
+changed golden means a previously accepted hydrant or closure result changed and
+needs review.
+
+For each scenario, open:
+
+```bash
+data/scenario_runs/<timestamp>/<scenario_id>/plan.json
+```
+
+From a fire police review perspective, check:
+
+- `summary.selected_hydrant`: whether the hydrant source, name, and location
+  make sense for the incident.
+- `summary.hose_route.length_ft`: whether the hose run is operationally
+  reasonable and within the scenario's `hose_max_ft`.
+- `summary.hose_route.curvature`: whether the hose route is unusually twisty.
+- `summary.hose_route.elevation_change_ft`: whether elevation change might make
+  the hose run harder or slower.
+- `summary.closures`: whether the recommended closure roads make sense for
+  isolating the incident and protecting the hose.
+- `plan.ranked_closures`: detailed closure reasons, road class/cost, county road
+  match fields, and sightline caution labels.
+- `plan.overlays`: the map-ready incident, hydrant, hose, closure, and warning
+  sign features.
+- `plan.warning_signs`: advisory MUTCD-based advance-warning sign candidate
+  locations.
+
+Compare those outputs against `reviewer_notes`, `expected_hydrant_hint`, and
+`expected_closure_hint` in `data/scenarios/incidents.csv`. Promote only after a
+human reviewer accepts the selected hydrant, hose route, and closure list.
+
+The app review flow is:
+
+1. Click `Reload Runs` in the Scenario Runs panel.
+2. Click the review/search button for the run.
+3. Click a scenario result to load its saved map overlays.
+4. Review status, golden differences, selected hydrant, hose distance, closure
+   ranking, and advisory warning signs.
+5. Click the promote button once to arm promotion, then again to confirm.
+
 Recommended workflow for adding expert-reviewed scenarios:
 
 ```bash
@@ -216,58 +290,143 @@ scripts/run_scenarios.sh
 RUN_SCENARIOS=1 scripts/test_all.sh
 ```
 
-## Implementation Plan
+## How Recommendations Work
+
+This tool is a decision-support prototype. It does not replace incident command,
+local fire police judgment, police coordination, DOT requirements, or MUTCD
+engineering judgment.
+
+### Hydrant and Hose Route Choice
+
+For an incident location, the planner looks for hydrants that can be reached
+through the road graph within the scenario's maximum hose distance. It scores
+candidate hydrants using:
+
+- hose route length
+- route curviness
+- elevation change, when elevation data is present on the graph
+
+Shorter, straighter, and flatter hose routes score better. If a farther hydrant
+creates a straighter or more practical route, it can outrank a closer hydrant as
+long as it remains within `hose_max_ft`.
+
+### Road Curviness
+
+Curviness is estimated by walking the road path and adding up the turn angles
+between consecutive graph segments. A straight run has low curvature. A route
+with many bends, sharp turns, or indirect geometry has higher curvature. The
+planner uses this both when scoring hose candidates and when road-edge curvature
+data is available for closure/sightline cost.
+
+### Elevation and Sight Visibility
+
+The planner supports elevation-aware scoring where graph nodes or edges include
+elevation/grade. Current generated graphs do not yet have comprehensive
+elevation enrichment, so elevation change is used when present and otherwise
+reported as zero. The planned road enrichment work will make this stronger by
+adding reliable grade/elevation data to graph edges.
+
+For closure recommendations, the cost model can penalize road edges with higher
+grade or curvature because those conditions can reduce sight distance and make a
+closure less desirable. In the UI and output, higher-cost closure edges are
+flagged with more caution.
+
+### Closure Recommendation Method
+
+The closure engine uses a network min-cut algorithm. In practical terms:
+
+1. The incident area is treated as the zone to isolate.
+2. The surrounding road network is treated as outside traffic.
+3. The selected hose route is protected so the algorithm avoids recommending
+   closures that block the hose.
+4. Each road edge receives a closure cost. Higher-capacity or more disruptive
+   roads cost more to close than local streets.
+5. Min-cut finds the least-cost set of road edges that separates outside traffic
+   from the incident area.
+
+The result is a ranked closure list. It is not saying every listed point must be
+closed exactly as shown; it is identifying the road edges that mathematically
+separate the incident zone while trying to avoid unnecessarily disruptive
+closures and protect the hose route.
+
+### MUTCD Advisory Warning Signs
+
+The planner emits advisory advance-warning sign candidates using defaults from
+FHWA's MUTCD 11th Edition with Revision 1, Part 6, Table 6B-1. Initial defaults
+are:
+
+- urban low speed: A/B/C = 100/100/100 ft
+- urban high speed: A/B/C = 350/350/350 ft
+- rural: A/B/C = 500/500/500 ft
+- expressway/freeway: A/B/C = 1000/1500/2640 ft
+
+These are advisory starting points. Actual sign placement must account for field
+conditions, intersections, driveways, sight distance, available shoulders, police
+direction, agency policy, and incident command decisions.
+
+## Current Implementation Details
 
 ### Routing Graph Strategy
 
-The current full-county GraphML build is too slow through Overpass, while the
-scenario-local graph builder is practical for validation. The production path
-should move to cached incident-local or tiled GraphML artifacts:
+The planner uses a cached incident-local graph strategy. If
+`data/generated/road_graph.graphml` exists, the planner uses that explicit graph.
+Otherwise it creates or reuses a graph cache entry under
+`data/generated/graph_cache/`, keyed by rounded incident location, study radius,
+network type, and cache version.
 
-1. Add a graph cache keyed by rounded incident location, study radius, and
-   network type.
-2. Store cache metadata with bbox, source timestamp, node/edge counts, and
-   scenario coverage.
-3. Prefer cached graphs in the planner and fetch OSMnx only on cache miss.
-4. Add a tile prebuild command for operational areas that should work offline.
-5. Add tests that verify planner behavior is identical when using a fresh graph
-   and a cached graph.
+Use this to prebuild active scenario cache entries:
+
+```bash
+scripts/build_graph_cache.sh
+scripts/build_graph_cache.sh --scenario-id scenario-norristown-main
+```
+
+The older `scripts/build_scenario_graph.sh` remains useful for building a single
+combined GraphML around active scenarios. The cache path is better for normal
+planner operation because it can reuse incident-local graphs by location.
 
 ### County Road Attribute Reconciliation
 
 The displayed county road layer and OSMnx routing graph are currently separate.
-Reconciliation should transfer county `St_Name`, `FuncClass`, `Owner`, and
-related fields onto graph edges:
+At planning time, the backend spatially matches graph edges against the generated
+Montgomery County road layer and attaches county attributes where confidence is
+high enough:
 
-1. Build a spatial index over Montgomery County road geometries.
-2. For each OSMnx edge, find nearby county segments by distance and bearing.
-3. Attach the best county match and confidence score to the graph edge.
-4. Use matched `FuncClass` and ownership to tune closure cost.
-5. Surface matched road names and confidence in planner outputs and reports.
+- `county_st_name`
+- `county_func_class`
+- `county_owner`
+- `county_seg_id`
+- `county_match_confidence`
+
+Closure names prefer matched county street names. Closure costs use matched
+county functional class when available, then fall back to OSM road class.
 
 ### Scenario Review UI
 
-Scenario runs are currently written to files. The frontend should support review
-without leaving the app:
+Scenario runs are written to files and are also reviewable from the app. Backend
+review endpoints are:
 
-1. Add backend endpoints to list run directories, read run summaries, and read a
-   scenario plan output.
-2. Add a Scenario Runs panel with status, golden comparison, and report links.
-3. Render selected hydrant, hose distance, closure list, and golden differences.
-4. Add a guarded "promote run" action that calls the golden update workflow.
-5. Add Playwright coverage for reviewing a run and promoting accepted results.
+- `GET /api/scenario-runs`
+- `GET /api/scenario-runs/{run_id}`
+- `GET /api/scenario-runs/{run_id}/scenarios/{scenario_id}`
+- `POST /api/scenario-runs/{run_id}/promote`
+
+The frontend Scenario Runs panel lists recent runs, loads saved plan overlays,
+and uses a two-step promotion action.
 
 ### MUTCD Advance-Warning Placement
 
-MUTCD support should be added after closure recommendations are validated:
+The planner emits advisory warning-sign candidates as a separate
+`warning_signs` GeoJSON layer. Defaults come from FHWA MUTCD 11th Edition with
+Revision 1, Part 6, Table 6B-1:
 
-1. Start with a rule table for minor, intermediate, and major incidents.
-2. Derive advance-warning candidate points along inbound approaches to each
-   closure.
-3. Include road speed/class, sight distance, curvature, intersections, and
-   available shoulder/placement constraints where data exists.
-4. Render sign placement candidates as a separate map layer and planner output.
-5. Add scenario expectations for sign spacing and blocked/invalid placements.
+- urban low speed: A/B/C = 100/100/100 ft
+- urban high speed: A/B/C = 350/350/350 ft
+- rural: A/B/C = 500/500/500 ft
+- expressway/freeway: A/B/C = 1000/1500/2640 ft
+
+These are advisory starting points and need local agency/engineering review
+before operational use.
 
 The backend serves API endpoints for GIS layer generation, manual hydrant
 editing, geocoding, and incident planning. The frontend is a React + Leaflet map

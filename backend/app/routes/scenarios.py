@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from app.models import Scenario, ScenarioIn
 from app.scenario_store import add_scenario, delete_scenario, list_scenarios, update_scenario
+from app.services.scenario_runs import list_scenario_runs, promote_run, read_run_summary, read_scenario_plan
 from app.services.scenario_runner import run_scenarios
 
 router = APIRouter(tags=["scenarios"])
@@ -40,3 +41,32 @@ def run_single_scenario(scenario_id: str) -> dict:
     if not result["results"]:
         raise HTTPException(status_code=404, detail="Scenario not found")
     return result
+
+
+@router.get("/scenario-runs")
+def list_runs() -> list[dict]:
+    return list_scenario_runs()
+
+
+@router.get("/scenario-runs/{run_id}")
+def get_run(run_id: str) -> dict:
+    try:
+        return read_run_summary(run_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail="Scenario run not found") from e
+
+
+@router.get("/scenario-runs/{run_id}/scenarios/{scenario_id}")
+def get_run_scenario(run_id: str, scenario_id: str) -> dict:
+    try:
+        return read_scenario_plan(run_id, scenario_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail="Scenario plan not found") from e
+
+
+@router.post("/scenario-runs/{run_id}/promote")
+def promote_scenario_run(run_id: str) -> dict:
+    try:
+        return promote_run(run_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail="Scenario run not found") from e

@@ -23,6 +23,7 @@ class IncidentPlanRequest(BaseModel):
     incident_radius_ft: float = Field(default=300.0, gt=0)
     study_radius_ft: float = Field(default=2500.0, gt=0)
     hose_max_ft: float = Field(default=500.0, gt=0)
+    incident_class: str = "minor"
 
 
 class GeocodeResult(BaseModel):

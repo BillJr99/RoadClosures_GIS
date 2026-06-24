@@ -43,6 +43,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   let buildCalled = false;
   let planCalled = false;
   let scenarioRunCalled = false;
+  let promoteCalled = false;
 
   await page.route("**/api/layers/roads", async (route) => {
     await route.fulfill({ json: roads });
@@ -107,6 +108,86 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
       },
     });
   });
+  await page.route("**/api/scenario-runs", async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          run_id: "20260624T120000Z",
+          report_path: "data/scenario_runs/20260624T120000Z/report.html",
+          result_count: 1,
+          failed_count: 0,
+          changed_count: 0,
+          missing_count: 1,
+        },
+      ],
+    });
+  });
+  await page.route("**/api/scenario-runs/20260624T120000Z", async (route) => {
+    await route.fulfill({
+      json: {
+        run_id: "20260624T120000Z",
+        run_dir: "data/scenario_runs/20260624T120000Z",
+        report_path: "data/scenario_runs/20260624T120000Z/report.html",
+        results: [
+          {
+            scenario_id: "scenario-new",
+            name: "Edited Scenario",
+            status: "passed",
+            golden_status: "missing",
+            differences: ["No golden summary exists yet"],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/scenario-runs/20260624T120000Z/scenarios/scenario-new", async (route) => {
+    await route.fulfill({
+      json: {
+        scenario: {
+          scenario_id: "scenario-new",
+          name: "Edited Scenario",
+          lat: 40.215,
+          lon: -75.305,
+          incident_radius_ft: 300,
+          study_radius_ft: 2500,
+          hose_max_ft: 500,
+          reviewer_notes: "",
+          expected_hydrant_hint: "",
+          expected_closure_hint: "",
+          status: "active",
+          updated_at: "2026-06-23T00:00:00Z",
+        },
+        plan: {
+          cut_value: 3.2,
+          selected_hydrant: hydrants.features[0],
+          hose_route: {
+            type: "Feature",
+            geometry: { type: "LineString", coordinates: [[-75.305, 40.215], [-75.304, 40.216]] },
+            properties: { length_ft: 300 },
+          },
+          closures: { type: "FeatureCollection", features: [] },
+          overlays: { type: "FeatureCollection", features: [] },
+          warning_signs: {
+            type: "FeatureCollection",
+            features: [
+              {
+                type: "Feature",
+                geometry: { type: "Point", coordinates: [-75.308, 40.214] },
+                properties: { kind: "warning_sign", sequence: "A" },
+              },
+            ],
+          },
+          graph_source: { cache_hit: true, cache_key: "test" },
+          ranked_closures: [{ rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good" }],
+          hydrant_candidates: [],
+        },
+      },
+    });
+  });
+  await page.route("**/api/scenario-runs/20260624T120000Z/promote", async (route) => {
+    promoteCalled = true;
+    await route.fulfill({ json: { run_id: "20260624T120000Z", promoted_count: 1 } });
+  });
   await page.route("**/api/geocode?q=*", async (route) => {
     await route.fulfill({
       json: [{ label: "123 Main St, Montgomery County", lat: 40.215, lon: -75.305 }],
@@ -148,6 +229,17 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
             },
           ],
         },
+        warning_signs: {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: { type: "Point", coordinates: [-75.308, 40.214] },
+              properties: { kind: "warning_sign", sequence: "A" },
+            },
+          ],
+        },
+        graph_source: { cache_hit: true, cache_key: "test" },
         ranked_closures: [{ rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good" }],
         hydrant_candidates: [],
       },
@@ -177,6 +269,15 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByTitle("Run scenario").last().click();
   await expect(page.getByText(/Last scenario run/i)).toBeVisible();
   expect(scenarioRunCalled).toBe(true);
+
+  await page.getByTitle("Review run").click();
+  await expect(page.getByText(/Review 20260624T120000Z/i)).toBeVisible();
+  await page.getByRole("button", { name: /Edited Scenario: passed/i }).click();
+  await expect(page.getByText(/MUTCD advisory signs/i)).toBeVisible();
+  await page.getByTitle("Promote run").click();
+  await page.getByTitle("Promote run").click();
+  await expect(page.getByText(/Promoted 1 scenario summaries/i)).toBeVisible();
+  expect(promoteCalled).toBe(true);
 
   await page.getByTitle("Delete scenario").last().click();
   await expect(page.locator(".scenario-row").filter({ hasText: "Edited Scenario" })).toHaveCount(0);

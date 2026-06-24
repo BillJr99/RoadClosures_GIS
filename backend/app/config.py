@@ -11,6 +11,7 @@ GENERATED_DIR = DATA_ROOT / "generated"
 SCENARIO_DIR = DATA_ROOT / "scenarios"
 SCENARIO_RUNS_DIR = DATA_ROOT / "scenario_runs"
 SCENARIO_GOLDEN_DIR = DATA_ROOT / "scenario_golden"
+GRAPH_CACHE_DIR = GENERATED_DIR / "graph_cache"
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ ROAD_GRAPH_SUMMARY_JSON = GENERATED_DIR / "road_graph_summary.json"
 def ensure_data_dirs() -> None:
     MANUAL_DIR.mkdir(parents=True, exist_ok=True)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    GRAPH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_RUNS_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)

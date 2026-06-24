@@ -153,6 +153,10 @@ button.primary {
   gap: 6px;
 }
 
+.row-actions.three-actions {
+  grid-template-columns: repeat(2, 36px);
+}
+
 .row-actions button {
   width: 36px;
   padding: 0;

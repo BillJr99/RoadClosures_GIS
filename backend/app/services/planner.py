@@ -9,6 +9,9 @@ import networkx as nx
 from app.config import RECONCILED_HYDRANTS_GEOJSON, ROAD_GRAPH_GRAPHML
 from app.geojson import line_feature, point_feature, read_geojson
 from app.models import IncidentPlanRequest
+from app.services.graph_cache import graph_radius_m, load_or_fetch_graph
+from app.services.road_matching import enrich_graph_with_county_roads
+from app.services.warning_signs import warning_sign_features
 
 
 M_TO_FT = 3.28084
@@ -47,14 +50,22 @@ class HydrantCandidate:
     score: float
 
 
-def _load_graph_for_incident(req: IncidentPlanRequest) -> Any:
+def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, Any]]:
     import osmnx as ox
 
     if ROAD_GRAPH_GRAPHML.exists():
-        return ox.load_graphml(ROAD_GRAPH_GRAPHML)
-    dist_m = max(req.study_radius_ft * FT_TO_M, 500.0)
-    graph = ox.graph_from_point((req.lat, req.lon), dist=dist_m, network_type="drive", simplify=True)
-    return ox.project_graph(graph)
+        graph = ox.load_graphml(ROAD_GRAPH_GRAPHML)
+        graph = enrich_graph_with_county_roads(graph)
+        return graph, {
+            "cache_hit": False,
+            "cache_key": None,
+            "graph_path": str(ROAD_GRAPH_GRAPHML),
+            "source": "configured GraphML artifact",
+            "radius_m": graph_radius_m(req),
+        }
+    graph, metadata = load_or_fetch_graph(req)
+    graph = enrich_graph_with_county_roads(graph)
+    return graph, metadata
 
 
 def _transformer_to_graph(graph: Any):
@@ -175,6 +186,16 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int) ->
 
 
 def _class_cost(data: dict[str, Any]) -> float:
+    county_class = str(data.get("county_func_class") or "").lower()
+    if county_class:
+        if any(token in county_class for token in ("interstate", "freeway", "expressway")):
+            return 12.0
+        if "arterial" in county_class or county_class in {"1", "2", "3"}:
+            return 8.0
+        if "collector" in county_class or county_class in {"4", "5"}:
+            return 5.0
+        if "local" in county_class or county_class in {"6", "7"}:
+            return 2.0
     highway = data.get("highway", "unclassified")
     if isinstance(highway, list):
         highway = highway[0]
@@ -237,7 +258,7 @@ def _path_coords(graph: Any, path: list[int]) -> list[list[float]]:
 
 def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]) -> dict[str, Any]:
     source = data.get("source_data") or {}
-    name = source.get("name") or source.get("St_Name") or "Unnamed road"
+    name = source.get("county_st_name") or source.get("name") or source.get("St_Name") or "Unnamed road"
     if isinstance(name, list):
         name = name[0]
     coords = [[*_node_lonlat(graph, u)], [*_node_lonlat(graph, v)]]
@@ -249,6 +270,11 @@ def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]
             "name": name,
             "capacity": round(capacity, 3),
             "highway": source.get("highway", "unclassified"),
+            "county_st_name": source.get("county_st_name"),
+            "county_func_class": source.get("county_func_class"),
+            "county_owner": source.get("county_owner"),
+            "county_seg_id": source.get("county_seg_id"),
+            "county_match_confidence": source.get("county_match_confidence"),
             "reason": "Minimum cut closure edge; hose route protected",
             "sightline": "caution" if capacity >= 6 else "good",
         },
@@ -256,7 +282,7 @@ def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]
 
 
 def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
-    graph = _load_graph_for_incident(req)
+    graph, graph_source = _load_graph_for_incident(req)
     x, y = _incident_xy(graph, req)
     fire_node = _nearest_node(graph, req.lon, req.lat)
 
@@ -279,6 +305,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         _closure_feature(graph, rank, u, v, data)
         for rank, (u, v, data) in enumerate(ranked, start=1)
     ]
+    warning_signs = warning_sign_features(graph, ranked)
     hose_feature = line_feature(
         _path_coords(graph, selected.path),
         {
@@ -299,8 +326,10 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         "closures": {"type": "FeatureCollection", "features": closure_features},
         "overlays": {
             "type": "FeatureCollection",
-            "features": [incident_feature, hydrant_feature, hose_feature, *closure_features],
+            "features": [incident_feature, hydrant_feature, hose_feature, *closure_features, *warning_signs["features"]],
         },
+        "warning_signs": warning_signs,
+        "graph_source": graph_source,
         "ranked_closures": [feature["properties"] for feature in closure_features],
         "hydrant_candidates": [
             {
@@ -314,4 +343,3 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
             for item in candidates[:10]
         ],
     }
-
