@@ -18,7 +18,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8001
 ```
 
-Open the backend API docs at:
+Access the backend API docs at:
 
 ```text
 http://127.0.0.1:8001/docs
@@ -32,7 +32,7 @@ npm install
 npm run dev
 ```
 
-Open the app at:
+Access the frontend app at:
 
 ```text
 http://localhost:5173/
