@@ -13,6 +13,8 @@ The repository contains a functional MVP implementation:
   `scripts/update_scenario_golden.sh`
 - Scenario-local graph build tooling in `scripts/build_scenario_graph.sh`
 - Incident-local graph cache tooling in `scripts/build_graph_cache.sh`
+- Road matching audit tooling in `scripts/audit_road_matching.sh`
+- Graph elevation enrichment tooling in `scripts/enrich_graph_elevation.sh`
 - Headed slow browser demonstration in `scripts/demo_browser.sh`
 - Full test runner in `scripts/test_all.sh`
 - Legacy prototype scripts and planning documents preserved at the repo root
@@ -28,7 +30,7 @@ git --git-dir=.repo.git --work-tree=. log --oneline --decorate -10
 Latest known clean implementation commit:
 
 ```text
-ffcf06a feat: add graph cache review UI and warning signs
+a12c49a docs: add planner guide and synthetic cases
 ```
 
 ## Generated Data
@@ -42,6 +44,8 @@ Last successful live rebuild produced:
 - `reconciled_hydrants.geojson`: 7,579 hydrants
 - `manual_hydrants.geojson`: 0 manual hydrants
 - `roads.geojson`: 92,808 road features
+- `road_graph.graphml`: scenario-local graph when built
+- `graph_cache/`: incident-local cached graphs when built
 
 Rebuild commands:
 
@@ -49,6 +53,9 @@ Rebuild commands:
 scripts/rebuild_gis_data.sh hydrants
 scripts/rebuild_gis_data.sh roads --skip-graph
 scripts/rebuild_gis_data.sh all
+scripts/build_graph_cache.sh
+scripts/enrich_graph_elevation.sh --cache
+scripts/audit_road_matching.sh
 ```
 
 The full county OSMnx GraphML build was attempted but stopped because Overpass
@@ -89,6 +96,8 @@ RUN_SCENARIOS=1 scripts/test_all.sh
 
 `scripts/run_scenarios.sh` exits nonzero on planner failures or changed golden
 summaries. Missing goldens are reported but do not fail the first reviewed run.
+Latest live scenario validation passed with active scenarios at
+`data/scenario_runs/20260624T114150Z/`.
 
 In the Codex sandbox, Playwright/Vite server binding may require elevated
 execution. In a normal local shell, the script should run directly.
@@ -130,6 +139,9 @@ http://localhost:5173/
 - Scenario records can be created, edited, loaded, run, and deleted from the
   frontend.
 - Seeded active scenarios are present for Norristown, Lansdale, and Limerick.
+- Inactive synthetic edge-case scenarios are present for curvy hose routing,
+  steep grade, arterial/local tradeoffs, farther-straighter hydrants, sparse
+  rural graph, and high-speed MUTCD approaches.
 - Scenario run reports are written under ignored `data/scenario_runs/`; reviewed
   summaries can be promoted to `data/scenario_golden/`.
 - Scenario run review and two-step promotion are available in the frontend.
@@ -138,14 +150,18 @@ http://localhost:5173/
 - Incident-local graph cache is implemented for planner fallback.
 - County road attributes are spatially reconciled onto graph edges when
   available.
+- Road matching audit CSV generation is available.
+- Graph elevation enrichment via USGS EPQS is available for GraphML/cache files.
 - Reconciled hydrant layer is regenerated from authoritative + manual sources.
 - Road and hydrant layer endpoints are implemented.
 - Min-cut planner MVP is implemented:
   - picks reachable hydrant candidates
   - scores hose paths by length, curvature, and elevation if available
+  - reports hose max grade when elevation is enriched
   - protects hose-route edges
   - computes closure cut edges
-- Planner output includes advisory MUTCD Table 6B-1 warning sign candidates.
+- Planner output includes advisory MUTCD Table 6B-1 warning sign candidates
+  placed along upstream graph approaches where possible.
 - Frontend map shows layers, incident selection, manual hydrants, scenarios, and
   closure ranking.
 - A slow headed browser demonstration walks through the main workflow.
@@ -164,11 +180,12 @@ http://localhost:5173/
 
 3. Reconcile county road attributes onto OSMnx graph edges.
    First-pass spatial matching is implemented. Next step is expert validation
-   and confidence tuning against known roads.
+   and confidence tuning against known roads using
+   `scripts/audit_road_matching.sh`.
 
 4. Add real elevation/curvature enrichment to planner graph edges.
-   The old prototypes compute this for road geometries, but the current planner
-   only uses these values if already present on graph edges.
+   Elevation enrichment is implemented. Next step is running it against the
+   active graph/cache artifacts and reviewing grade effects in live scenarios.
 
 5. Expand manual hydrant UI.
    Backend supports update; frontend currently exposes add/remove but not full
@@ -177,5 +194,6 @@ http://localhost:5173/
 6. Add progress/error UI for long rebuilds.
    Current rebuilds are script/API driven, but frontend feedback is minimal.
 
-7. Add MUTCD advance-warning sign placement after core closure recommendations
-   are validated.
+7. Validate MUTCD advance-warning placement against agency expectations.
+   Current output is advisory and uses MUTCD 11th Edition Revision 1 Table 6B-1
+   defaults.
