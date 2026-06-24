@@ -13,6 +13,7 @@ test-results/
 playwright-report/
 backend/data/generated/
 data/generated/
+data/scenario_runs/
 output/
 test_output/
 *.log

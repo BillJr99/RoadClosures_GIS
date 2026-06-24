@@ -8,6 +8,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = REPO_ROOT / "data"
 MANUAL_DIR = DATA_ROOT / "manual"
 GENERATED_DIR = DATA_ROOT / "generated"
+SCENARIO_DIR = DATA_ROOT / "scenarios"
+SCENARIO_RUNS_DIR = DATA_ROOT / "scenario_runs"
+SCENARIO_GOLDEN_DIR = DATA_ROOT / "scenario_golden"
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class SourceConfig:
 SOURCES = SourceConfig()
 
 MANUAL_HYDRANTS_CSV = MANUAL_DIR / "manual_hydrants.csv"
+SCENARIOS_CSV = SCENARIO_DIR / "incidents.csv"
 AUTHORITATIVE_HYDRANTS_GEOJSON = GENERATED_DIR / "authoritative_hydrants.geojson"
 MANUAL_HYDRANTS_GEOJSON = GENERATED_DIR / "manual_hydrants.geojson"
 RECONCILED_HYDRANTS_GEOJSON = GENERATED_DIR / "reconciled_hydrants.geojson"
@@ -52,3 +56,6 @@ ROAD_GRAPH_SUMMARY_JSON = GENERATED_DIR / "road_graph_summary.json"
 def ensure_data_dirs() -> None:
     MANUAL_DIR.mkdir(parents=True, exist_ok=True)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    SCENARIO_DIR.mkdir(parents=True, exist_ok=True)
+    SCENARIO_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    SCENARIO_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)

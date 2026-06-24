@@ -98,6 +98,34 @@ cd frontend
 npx playwright install chromium
 ```
 
+To include real scenario validation in the full suite:
+
+```bash
+RUN_SCENARIOS=1 scripts/test_all.sh
+```
+
+## Scenario Validation
+
+Incident scenarios are stored in `data/scenarios/incidents.csv`. They can be
+edited by hand or through the app. Run all active scenarios:
+
+```bash
+scripts/run_scenarios.sh
+```
+
+Run one scenario:
+
+```bash
+scripts/run_scenarios.sh --scenario-id scenario-example
+```
+
+Scenario outputs are written to `data/scenario_runs/<timestamp>/` and are
+ignored by git. To promote a reviewed run to golden summaries:
+
+```bash
+scripts/update_scenario_golden.sh data/scenario_runs/<timestamp>
+```
+
 The backend serves API endpoints for GIS layer generation, manual hydrant
 editing, geocoding, and incident planning. The frontend is a React + Leaflet map
 that consumes those APIs.

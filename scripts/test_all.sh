@@ -17,3 +17,8 @@ npm run build
 echo "== Browser orchestration tests =="
 npm run test:e2e
 
+if [[ "${RUN_SCENARIOS:-0}" == "1" ]]; then
+  echo "== Real scenario validation =="
+  cd "$ROOT_DIR"
+  scripts/run_scenarios.sh
+fi
