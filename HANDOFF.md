@@ -26,7 +26,7 @@ git --git-dir=.repo.git --work-tree=. log --oneline --decorate -10
 Latest known clean implementation commit:
 
 ```text
-1300988 feat: add scenario UI and validation tests
+7fc5705 feat: add scenario graph builder
 ```
 
 ## Generated Data
