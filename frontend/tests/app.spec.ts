@@ -163,7 +163,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
           hose_route: {
             type: "Feature",
             geometry: { type: "LineString", coordinates: [[-75.305, 40.215], [-75.304, 40.216]] },
-            properties: { length_ft: 300 },
+            properties: { length_ft: 300, curvature: 0.11, elevation_change_ft: 5, max_grade: 0.02 },
           },
           closures: { type: "FeatureCollection", features: [] },
           overlays: { type: "FeatureCollection", features: [] },
@@ -173,7 +173,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
               {
                 type: "Feature",
                 geometry: { type: "Point", coordinates: [-75.308, 40.214] },
-                properties: { kind: "warning_sign", sequence: "A" },
+                properties: { kind: "warning_sign", sequence: "A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
               },
             ],
           },
@@ -203,10 +203,10 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
       json: {
         cut_value: 3.2,
         selected_hydrant: hydrants.features[0],
-        hose_route: {
+          hose_route: {
           type: "Feature",
           geometry: { type: "LineString", coordinates: [[-75.305, 40.215], [-75.304, 40.216]] },
-          properties: { length_ft: 300 },
+          properties: { length_ft: 300, curvature: 0.11, elevation_change_ft: 5, max_grade: 0.02 },
         },
         closures: {
           type: "FeatureCollection",
@@ -235,12 +235,12 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
             {
               type: "Feature",
               geometry: { type: "Point", coordinates: [-75.308, 40.214] },
-              properties: { kind: "warning_sign", sequence: "A" },
+              properties: { kind: "warning_sign", sequence: "A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
             },
           ],
         },
         graph_source: { cache_hit: true, cache_key: "test" },
-        ranked_closures: [{ rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good" }],
+        ranked_closures: [{ rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good", county_st_name: "Main St", county_match_confidence: 0.9 }],
         hydrant_candidates: [],
       },
     });
@@ -274,6 +274,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await expect(page.getByText(/Review 20260624T120000Z/i)).toBeVisible();
   await page.getByRole("button", { name: /Edited Scenario: passed/i }).click();
   await expect(page.getByText(/MUTCD advisory signs/i)).toBeVisible();
+  await expect(page.getByText(/Hose 300 ft/i)).toBeVisible();
   await page.getByTitle("Promote run").click();
   await page.getByTitle("Promote run").click();
   await expect(page.getByText(/Promoted 1 scenario summaries/i)).toBeVisible();

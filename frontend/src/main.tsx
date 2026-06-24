@@ -384,6 +384,9 @@ function App() {
     return { lat: coords[1], lon: coords[0] };
   }, [plan]);
 
+  const selectedHydrantProps = plan?.selected_hydrant.properties ?? {};
+  const hoseProps = plan?.hose_route.properties ?? {};
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -553,6 +556,13 @@ function App() {
 
         {plan && (
           <section className="panel">
+            <h2>Plan Review</h2>
+            <div className="scenario-result">
+              <strong>Selected hydrant</strong>
+              <span>{String(selectedHydrantProps.name || selectedHydrantProps.source || "Hydrant")} · {selectedHydrant ? formatCoords(selectedHydrant.lat, selectedHydrant.lon) : ""}</span>
+              <span>Hose {String(hoseProps.length_ft ?? "n/a")} ft · curvature {String(hoseProps.curvature ?? "n/a")} · elevation {String(hoseProps.elevation_change_ft ?? "n/a")} ft · max grade {String(hoseProps.max_grade ?? "n/a")}</span>
+              {plan.graph_source && <span>Graph: {String(plan.graph_source.source ?? "graph")} · cache {String(plan.graph_source.cache_hit)}</span>}
+            </div>
             <h2>Closure Ranking</h2>
             <div className="list">
               {plan.ranked_closures.map((closure, index) => (
@@ -561,6 +571,7 @@ function App() {
                   <span>{String(closure.reason)}</span>
                   <span>Cost {String(closure.capacity)} · {String(closure.sightline)}</span>
                   {Boolean(closure.county_st_name) && <span>County match: {String(closure.county_st_name)} ({String(closure.county_match_confidence)})</span>}
+                  {Boolean(closure.abs_grade) && <span>Grade {String(closure.abs_grade)} · elevation change {String(closure.elevation_change_m)} m</span>}
                 </div>
               ))}
             </div>
@@ -568,6 +579,11 @@ function App() {
               <div className="scenario-result">
                 <strong><Flag size={16} /> MUTCD advisory signs</strong>
                 <span>{plan.warning_signs.features.length} candidate sign location(s)</span>
+                {plan.warning_signs.features.slice(0, 6).map((feature, index) => (
+                  <span key={index}>
+                    {String(feature.properties?.sequence)} · {String(feature.properties?.approach_road)} · {String(feature.properties?.distance_from_closure_ft)} ft · {String(feature.properties?.placement_status)}
+                  </span>
+                ))}
               </div>
             )}
           </section>
