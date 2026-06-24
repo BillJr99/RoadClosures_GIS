@@ -26,6 +26,15 @@ npm install
 npm run dev
 ```
 
+`frontend/node_modules/` is intentionally ignored by git and is not committed.
+If it is missing or was removed after a failed folder move, recreate it from the
+lockfile:
+
+```bash
+cd frontend
+npm install
+```
+
 The frontend defaults to `http://localhost:8001/api`. Override it with
 `VITE_API_BASE` if you run the backend elsewhere.
 
