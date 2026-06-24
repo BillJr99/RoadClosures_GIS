@@ -6,6 +6,7 @@ import {
   Marker,
   TileLayer,
   Tooltip,
+  useMap,
   useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
@@ -117,6 +118,16 @@ function IncidentClick({ onPick }: { onPick: (incident: Incident) => void }) {
   return null;
 }
 
+function IncidentFocus({ incident }: { incident: Incident | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (incident) {
+      map.flyTo([incident.lat, incident.lon], Math.max(map.getZoom(), 15), { duration: 0.7 });
+    }
+  }, [incident, map]);
+  return null;
+}
+
 function App() {
   const [roads, setRoads] = useState<FeatureCollection | null>(null);
   const [hydrants, setHydrants] = useState<FeatureCollection | null>(null);
@@ -126,9 +137,13 @@ function App() {
   const [incident, setIncident] = useState<Incident | null>(null);
   const [address, setAddress] = useState("");
   const [plan, setPlan] = useState<PlanResponse | null>(null);
+  const [planVersion, setPlanVersion] = useState(0);
+  const [isPlanning, setIsPlanning] = useState(false);
   const [scenarioRun, setScenarioRun] = useState<ScenarioRunResult | null>(null);
   const [scenarioRuns, setScenarioRuns] = useState<ScenarioRunListItem[]>([]);
   const [pendingPromoteRunId, setPendingPromoteRunId] = useState<string | null>(null);
+  const [pendingRemoveScenarioId, setPendingRemoveScenarioId] = useState<string | null>(null);
+  const [runningScenarioId, setRunningScenarioId] = useState<string | null>(null);
   const [message, setMessage] = useState("Load generated layers, then pick an incident.");
   const [manualDraft, setManualDraft] = useState({
     name: "",
@@ -201,19 +216,28 @@ function App() {
       setMessage("Pick an incident location first.");
       return;
     }
-    const result = await jsonFetch<PlanResponse>(`${API}/plan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        lat: incident.lat,
-        lon: incident.lon,
-        incident_radius_ft: 300,
-        study_radius_ft: 2500,
-        hose_max_ft: 500,
-      }),
-    });
-    setPlan(result);
-    setMessage(`Plan ready: ${result.ranked_closures.length} closure recommendations.`);
+    setIsPlanning(true);
+    setMessage("Calculating closure recommendations. This can take 10-30 seconds.");
+    try {
+      const result = await jsonFetch<PlanResponse>(`${API}/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lat: incident.lat,
+          lon: incident.lon,
+          incident_radius_ft: 300,
+          study_radius_ft: 2500,
+          hose_max_ft: 500,
+        }),
+      });
+      setPlan(result);
+      setPlanVersion((version) => version + 1);
+      setMessage(`Plan ready: ${result.ranked_closures.length} closure recommendations.`);
+    } catch (error) {
+      setMessage(`Planner failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsPlanning(false);
+    }
   }
 
   function scenarioPayload() {
@@ -303,23 +327,42 @@ function App() {
       expected_closure_hint: scenario.expected_closure_hint,
       status: scenario.status,
     });
-    setMessage(`Loaded scenario: ${scenario.name}`);
+    setMessage(`Loaded scenario and centered map: ${scenario.name}`);
   }
 
   async function removeScenario(id: string) {
-    await jsonFetch(`${API}/scenarios/${id}`, { method: "DELETE" });
-    if (editingScenarioId === id) resetScenarioDraft();
-    await loadScenarios();
-    setMessage("Scenario removed.");
+    if (pendingRemoveScenarioId !== id) {
+      setPendingRemoveScenarioId(id);
+      setMessage("Click delete again to confirm scenario removal.");
+      return;
+    }
+    try {
+      await jsonFetch(`${API}/scenarios/${id}`, { method: "DELETE" });
+      if (editingScenarioId === id) resetScenarioDraft();
+      await loadScenarios();
+      setMessage("Scenario removed.");
+    } catch (error) {
+      setMessage(`Scenario removal failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPendingRemoveScenarioId(null);
+    }
   }
 
   async function runScenario(id: string) {
-    const result = await jsonFetch<ScenarioRunResult>(`${API}/scenarios/${id}/run`, { method: "POST" });
-    setScenarioRun(result);
-    await loadScenarioRuns();
-    const first = result.results[0];
-    const status = first ? `${first.status}, golden ${first.golden_status}` : "no active scenario run";
-    setMessage(`Scenario run complete: ${status}.`);
+    setRunningScenarioId(id);
+    setMessage("Running scenario validation. This can take a while.");
+    try {
+      const result = await jsonFetch<ScenarioRunResult>(`${API}/scenarios/${id}/run`, { method: "POST" });
+      setScenarioRun(result);
+      await loadScenarioRuns();
+      const first = result.results[0];
+      const status = first ? `${first.status}, golden ${first.golden_status}` : "no active scenario run";
+      setMessage(`Scenario run complete: ${status}.`);
+    } catch (error) {
+      setMessage(`Scenario run failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setRunningScenarioId(null);
+    }
   }
 
   async function viewScenarioRun(runId: string) {
@@ -334,6 +377,7 @@ function App() {
       `${API}/scenario-runs/${runId}/scenarios/${scenarioId}`,
     );
     setPlan(saved.plan);
+    setPlanVersion((version) => version + 1);
     setIncident({ lat: saved.scenario.lat, lon: saved.scenario.lon });
     setMessage(`Loaded saved plan for ${saved.scenario.name}.`);
   }
@@ -404,7 +448,9 @@ function App() {
           <div className="coords">
             {incident ? formatCoords(incident.lat, incident.lon) : "Click the map to set incident"}
           </div>
-          <button className="primary" onClick={runPlan}><ShieldAlert size={18} /> Recommend Closures</button>
+          <button className="primary" onClick={runPlan} disabled={!incident || isPlanning}>
+            <ShieldAlert size={18} /> {isPlanning ? "Recommending..." : "Recommend Closures"}
+          </button>
         </section>
 
         <section className="panel">
@@ -493,8 +539,16 @@ function App() {
                 <div className="row-actions">
                   <button onClick={() => loadScenario(scenario)} title="Load scenario"><MapPin size={16} /></button>
                   <button onClick={() => editScenario(scenario)} title="Edit scenario"><Pencil size={16} /></button>
-                  <button onClick={() => runScenario(scenario.scenario_id)} title="Run scenario"><Play size={16} /></button>
-                  <button onClick={() => removeScenario(scenario.scenario_id)} title="Delete scenario"><Trash2 size={16} /></button>
+                  <button
+                    onClick={() => runScenario(scenario.scenario_id)}
+                    title="Run scenario"
+                    disabled={Boolean(runningScenarioId)}
+                  >
+                    {runningScenarioId === scenario.scenario_id ? <Check size={16} /> : <Play size={16} />}
+                  </button>
+                  <button onClick={() => removeScenario(scenario.scenario_id)} title="Delete scenario">
+                    {pendingRemoveScenarioId === scenario.scenario_id ? <Check size={16} /> : <Trash2 size={16} />}
+                  </button>
                 </div>
               </div>
             ))}
@@ -594,10 +648,11 @@ function App() {
         <MapContainer center={CENTER} zoom={12} className="map">
           <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
           <IncidentClick onPick={setIncident} />
+          <IncidentFocus incident={incident} />
           {roads && <GeoJSON data={roads} style={{ color: "#74808c", weight: 1, opacity: 0.6 }} />}
           {hydrants && <GeoJSON data={hydrants} pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 4, color: "#1677a3", fillOpacity: 0.8 })} />}
-          {plan && <GeoJSON data={plan.overlays} style={{ color: "#d9480f", weight: 5 }} />}
-          {plan?.warning_signs && <GeoJSON data={plan.warning_signs} pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 6, color: "#7c3aed", fillOpacity: 0.9 })} />}
+          {plan && <GeoJSON key={`plan-overlays-${planVersion}`} data={plan.overlays} style={{ color: "#d9480f", weight: 5 }} />}
+          {plan?.warning_signs && <GeoJSON key={`warning-signs-${planVersion}`} data={plan.warning_signs} pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 6, color: "#7c3aed", fillOpacity: 0.9 })} />}
           {incident && <Marker position={[incident.lat, incident.lon]}><Tooltip>Incident</Tooltip></Marker>}
           {selectedHydrant && <Marker position={[selectedHydrant.lat, selectedHydrant.lon]}><Tooltip>Selected hydrant</Tooltip></Marker>}
         </MapContainer>
