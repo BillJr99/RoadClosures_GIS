@@ -12,6 +12,8 @@ The repository contains a functional MVP implementation:
 - Scenario validation tooling in `scripts/run_scenarios.sh` and
   `scripts/update_scenario_golden.sh`
 - Scenario-local graph build tooling in `scripts/build_scenario_graph.sh`
+- Incident-local graph cache tooling in `scripts/build_graph_cache.sh`
+- Headed slow browser demonstration in `scripts/demo_browser.sh`
 - Full test runner in `scripts/test_all.sh`
 - Legacy prototype scripts and planning documents preserved at the repo root
 
@@ -26,7 +28,7 @@ git --git-dir=.repo.git --work-tree=. log --oneline --decorate -10
 Latest known clean implementation commit:
 
 ```text
-7ccfaa0 docs: add scenario usage and roadmap
+ffcf06a feat: add graph cache review UI and warning signs
 ```
 
 ## Generated Data
@@ -50,9 +52,9 @@ scripts/rebuild_gis_data.sh all
 ```
 
 The full county OSMnx GraphML build was attempted but stopped because Overpass
-subdivided Montgomery County into many slow subqueries. The planner currently
-falls back to fetching an incident-local OSMnx graph when no GraphML artifact is
-available.
+subdivided Montgomery County into many slow subqueries. The planner now prefers
+an explicit `road_graph.graphml` when present, otherwise it uses an
+incident-local cache under `data/generated/graph_cache/`.
 
 ## Verification
 
@@ -70,6 +72,13 @@ This runs:
 - Playwright browser orchestration test covering layer loading, geocoding,
   manual hydrants, scenario CRUD/run controls, rebuild action, and closure
   recommendation rendering
+
+The headed demonstration script was also verified with:
+
+```bash
+cd frontend
+DEMO_STEP_MS=10 DEMO_SLOW_MO_MS=0 npx playwright test --config playwright.demo.config.ts --project chromium
+```
 
 Real incident scenario validation is opt-in:
 
@@ -123,6 +132,12 @@ http://localhost:5173/
 - Seeded active scenarios are present for Norristown, Lansdale, and Limerick.
 - Scenario run reports are written under ignored `data/scenario_runs/`; reviewed
   summaries can be promoted to `data/scenario_golden/`.
+- Scenario run review and two-step promotion are available in the frontend.
+- Scenario run review APIs expose run lists, summaries, saved scenario plans,
+  and promotion.
+- Incident-local graph cache is implemented for planner fallback.
+- County road attributes are spatially reconciled onto graph edges when
+  available.
 - Reconciled hydrant layer is regenerated from authoritative + manual sources.
 - Road and hydrant layer endpoints are implemented.
 - Min-cut planner MVP is implemented:
@@ -130,8 +145,10 @@ http://localhost:5173/
   - scores hose paths by length, curvature, and elevation if available
   - protects hose-route edges
   - computes closure cut edges
+- Planner output includes advisory MUTCD Table 6B-1 warning sign candidates.
 - Frontend map shows layers, incident selection, manual hydrants, scenarios, and
   closure ranking.
+- A slow headed browser demonstration walks through the main workflow.
 
 ## Recommended Next Work
 
@@ -142,13 +159,12 @@ http://localhost:5173/
    The README documents the full scenario authoring and promotion workflow.
 
 2. Improve routing graph strategy.
-   Full county GraphML via Overpass is too slow. Prefer incident-local graph
-   caching or tiled prebuilds instead of one county-wide Overpass job.
+   Incident-local cache is implemented. Next step is tiled/prebuilt operational
+   area graphs for offline use.
 
 3. Reconcile county road attributes onto OSMnx graph edges.
-   The current display road layer and routing graph are still mostly separate.
-   Matching county `St_Name`, `FuncClass`, and ownership attributes to graph
-   edges will improve explainability and closure costs.
+   First-pass spatial matching is implemented. Next step is expert validation
+   and confidence tuning against known roads.
 
 4. Add real elevation/curvature enrichment to planner graph edges.
    The old prototypes compute this for road geometries, but the current planner
