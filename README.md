@@ -134,7 +134,8 @@ scripts/build_graph_cache.sh
 
 Incident scenarios are stored in `data/scenarios/incidents.csv`. They can be
 edited by hand or through the app. The repo includes seeded active scenarios for
-Norristown, Lansdale, and Limerick.
+Norristown, Lansdale, and Limerick, plus inactive synthetic edge cases for
+algorithm demonstration.
 
 ### Scenario Authoring Guide
 
@@ -290,79 +291,195 @@ scripts/run_scenarios.sh
 RUN_SCENARIOS=1 scripts/test_all.sh
 ```
 
-## How Recommendations Work
+## User Guide: How Recommendations Work
 
-This tool is a decision-support prototype. It does not replace incident command,
-local fire police judgment, police coordination, DOT requirements, or MUTCD
-engineering judgment.
+This tool is decision support for fire police planning. It does not replace
+incident command, local fire police judgment, police coordination, DOT
+requirements, MUTCD engineering judgment, or field conditions observed on scene.
+
+### What the Planner Is Trying To Do
+
+Given an incident point, the app tries to answer four practical questions:
+
+1. Which hydrant is a reasonable source for the hose line?
+2. What road path would the hose probably follow from that hydrant?
+3. Which roads should be closed to isolate the incident and protect the hose?
+4. Where should advance warning signs be considered before drivers reach the
+   closure?
 
 ### Hydrant and Hose Route Choice
 
-For an incident location, the planner looks for hydrants that can be reached
-through the road graph within the scenario's maximum hose distance. It scores
-candidate hydrants using:
+The planner looks for hydrants that can reach the incident through the road
+network within `hose_max_ft`. It does not simply pick the closest hydrant by
+straight-line distance. It scores reachable hydrants by:
 
 - hose route length
-- route curviness
-- elevation change, when elevation data is present on the graph
+- hose route curviness
+- hose route elevation change, when elevation data exists
 
-Shorter, straighter, and flatter hose routes score better. If a farther hydrant
-creates a straighter or more practical route, it can outrank a closer hydrant as
-long as it remains within `hose_max_ft`.
+A farther hydrant can win if it gives a straighter, flatter, more practical hose
+run within the maximum hose distance.
 
-### Road Curviness
+### Curvy Roads and Hose Runs
 
-Curviness is estimated by walking the road path and adding up the turn angles
-between consecutive graph segments. A straight run has low curvature. A route
-with many bends, sharp turns, or indirect geometry has higher curvature. The
-planner uses this both when scoring hose candidates and when road-edge curvature
-data is available for closure/sightline cost.
+Curviness is a turn-by-turn measure. A straight road segment has little or no
+curviness. A road path with many bends or sharp turns has higher curviness.
 
-### Elevation and Sight Visibility
+For a fire police reviewer, higher hose-route curviness means:
 
-The planner supports elevation-aware scoring where graph nodes or edges include
-elevation/grade. Current generated graphs do not yet have comprehensive
-elevation enrichment, so elevation change is used when present and otherwise
-reported as zero. The planned road enrichment work will make this stronger by
-adding reliable grade/elevation data to graph edges.
+- the hose route may be harder to protect
+- the hose may cross more complex road geometry
+- drivers may have less intuitive sightline to the hazard or closure
+- the planner may prefer another hydrant if it gives a straighter route
 
-For closure recommendations, the cost model can penalize road edges with higher
-grade or curvature because those conditions can reduce sight distance and make a
-closure less desirable. In the UI and output, higher-cost closure edges are
-flagged with more caution.
+### Hills, Elevation, and Sight Visibility
 
-### Closure Recommendation Method
+Elevation enrichment can add node elevation, edge grade, and elevation change to
+the graph. When that data is present, the planner reports hose elevation change
+and maximum hose grade. Closure edges can also include grade and elevation
+change.
 
-The closure engine uses a network min-cut algorithm. In practical terms:
+For a fire police reviewer, higher grade or elevation change means:
 
-1. The incident area is treated as the zone to isolate.
-2. The surrounding road network is treated as outside traffic.
-3. The selected hose route is protected so the algorithm avoids recommending
-   closures that block the hose.
-4. Each road edge receives a closure cost. Higher-capacity or more disruptive
-   roads cost more to close than local streets.
-5. Min-cut finds the least-cost set of road edges that separates outside traffic
-   from the incident area.
+- hose deployment may be slower or more difficult
+- drivers may have less visibility over a crest or around a vertical curve
+- closure or warning sign placement may need more conservative field review
 
-The result is a ranked closure list. It is not saying every listed point must be
-closed exactly as shown; it is identifying the road edges that mathematically
-separate the incident zone while trying to avoid unnecessarily disruptive
-closures and protect the hose route.
+The app currently treats sight visibility as a caution signal from available
+curve and grade data. It is not yet a full optical line-of-sight simulation.
+
+### Road Closure Recommendations
+
+The app uses a min-cut closure model. In plain language:
+
+1. The incident is the area to isolate.
+2. The surrounding road network is outside traffic.
+3. The selected hose route is protected.
+4. Roads are assigned closure costs. Major roads generally cost more to close
+   than local streets.
+5. The algorithm finds the least-disruptive set of road edges that separates
+   outside traffic from the incident area without cutting the hose route.
+
+The ranked closure list is not an order from the app. It is a suggested set of
+control points for review by incident command, fire police, police, and any
+agency with roadway authority.
 
 ### MUTCD Advisory Warning Signs
 
 The planner emits advisory advance-warning sign candidates using defaults from
-FHWA's MUTCD 11th Edition with Revision 1, Part 6, Table 6B-1. Initial defaults
-are:
+FHWA's MUTCD 11th Edition with Revision 1, Part 6, Table 6B-1:
 
 - urban low speed: A/B/C = 100/100/100 ft
 - urban high speed: A/B/C = 350/350/350 ft
 - rural: A/B/C = 500/500/500 ft
 - expressway/freeway: A/B/C = 1000/1500/2640 ft
 
-These are advisory starting points. Actual sign placement must account for field
-conditions, intersections, driveways, sight distance, available shoulders, police
-direction, agency policy, and incident command decisions.
+The app places candidate warning signs along the upstream approach path when the
+graph has enough road geometry. If there is not enough upstream graph path, the
+sign is flagged with a placement warning. Actual sign placement must account for
+intersections, driveways, shoulders, curves, hills, visibility, police direction,
+agency policy, and field conditions.
+
+### Synthetic Edge-Case Scenarios
+
+The CSV includes inactive synthetic scenarios for demonstration and algorithm
+coverage. They are not expert-reviewed incident examples. They are intended to
+exercise cases such as:
+
+- curvy hose routing
+- steep-grade routing
+- arterial versus local closure tradeoffs
+- farther hydrant but straighter hose route
+- sparse rural road graph
+- high-speed MUTCD approach
+
+Keep synthetic cases inactive until they pass live data and have been reviewed.
+
+## Technical Deep Dive: Algorithms
+
+### Graph Model
+
+Roads are represented as a directed NetworkX graph, usually loaded from OSMnx.
+The planner uses an explicit `data/generated/road_graph.graphml` when present.
+If that file is absent, it uses an incident-local cache under
+`data/generated/graph_cache/`.
+
+Hydrants are loaded from the reconciled hydrant GeoJSON, which combines
+authority, OSM, and manual sources.
+
+### Hydrant Routing Algorithm
+
+For each hydrant, the planner snaps the hydrant and incident to nearest graph
+nodes. It then uses NetworkX shortest path over edge `length` to estimate the
+hose route. Candidates over `hose_max_ft` are rejected.
+
+Hydrant score is currently:
+
+```text
+length_m + (curvature_radians * 75.0) + (elevation_change_m * 2.0)
+```
+
+Lower score is better. This makes length the dominant factor while still
+penalizing twisty or hilly routes.
+
+### Curvature Algorithm
+
+Curvature is computed along a graph path by looking at triples of consecutive
+nodes. For each turn, the planner computes the angle between the incoming and
+outgoing vectors and adds it to the route's total curvature.
+
+```text
+total_curvature = sum(turn_angle_radians)
+```
+
+This is a standard geometric proxy for how indirect or bend-heavy a polyline is.
+It is not a roadway design-speed calculation.
+
+### Elevation and Grade Algorithm
+
+`scripts/enrich_graph_elevation.sh` enriches GraphML files using USGS EPQS.
+Nodes receive `elevation`. Edges receive:
+
+- `elevation_change_m`
+- `grade`
+- `abs_grade`
+
+Hose elevation change is the sum of absolute elevation differences along the
+hose route. Maximum hose grade is the largest absolute edge grade on that path.
+
+### Road Matching Algorithm
+
+The county road layer and OSMnx routing graph are separate data sources. The
+road matching service spatially compares each graph edge to nearby Montgomery
+County road geometries. The match score combines:
+
+- geometric distance
+- bearing difference
+
+High-confidence matches attach county street name, functional class, owner,
+segment ID, match confidence, match distance, and bearing difference to graph
+edges. Use `scripts/audit_road_matching.sh` to generate a CSV for review.
+
+### Closure Min-Cut Algorithm
+
+The closure problem is modeled as a graph cut:
+
+- super-source: outside traffic/perimeter nodes
+- super-sink: incident-area nodes
+- protected edges: hose route edges get very high capacity
+- closure cost: road class plus sightline penalties from grade/curvature where
+  present
+
+NetworkX `minimum_cut` finds the least-cost edge set separating outside traffic
+from the incident area. Those cut edges become closure recommendations.
+
+### MUTCD Warning Sign Algorithm
+
+For each closure edge, the planner classifies the road approach as urban low
+speed, urban high speed, rural, or expressway/freeway. It then applies MUTCD
+Table 6B-1 A/B/C distances and traces upstream along predecessor edges to place
+candidate signs. Outputs include placement status and warning fields so a
+reviewer can see whether the graph had enough upstream path.
 
 ## Current Implementation Details
 
@@ -379,6 +496,13 @@ Use this to prebuild active scenario cache entries:
 ```bash
 scripts/build_graph_cache.sh
 scripts/build_graph_cache.sh --scenario-id scenario-norristown-main
+```
+
+Enrich graph elevation:
+
+```bash
+scripts/enrich_graph_elevation.sh
+scripts/enrich_graph_elevation.sh --cache
 ```
 
 The older `scripts/build_scenario_graph.sh` remains useful for building a single
@@ -400,6 +524,13 @@ high enough:
 
 Closure names prefer matched county street names. Closure costs use matched
 county functional class when available, then fall back to OSM road class.
+
+Write a road match audit CSV:
+
+```bash
+scripts/audit_road_matching.sh
+scripts/audit_road_matching.sh --limit 1000 --output data/generated/road_match_audit.csv
+```
 
 ### Scenario Review UI
 
