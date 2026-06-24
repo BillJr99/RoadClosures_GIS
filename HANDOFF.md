@@ -22,10 +22,10 @@ git --git-dir=.repo.git --work-tree=. status
 git --git-dir=.repo.git --work-tree=. log --oneline --decorate -10
 ```
 
-Latest known committed baseline before the current scenario UI/test work:
+Latest known clean implementation commit:
 
 ```text
-70d2173 feat: add scenario validation backend
+1300988 feat: add scenario UI and validation tests
 ```
 
 ## Generated Data
