@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from app.models import IncidentPlanRequest, Scenario
+from app import scenario_golden_store
 from app.services import scenario_runner
 
 
@@ -45,6 +46,21 @@ def _fake_plan(request: IncidentPlanRequest) -> dict[str, Any]:
         "ranked_closures": [
             {"rank": 1, "name": "Main St", "capacity": 2.5, "sightline": "limited"},
         ],
+        "warning_signs": {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-75.31, 40.21]},
+                    "properties": {
+                        "approach_road": "Main St",
+                        "sign_label": "Road Closed Ahead",
+                        "distance_from_closure_ft": 100,
+                        "placement_status": "placed",
+                    },
+                }
+            ],
+        },
     }
 
 
@@ -82,3 +98,37 @@ def test_run_scenarios_filters_inactive_and_compares_golden(tmp_path: Path, monk
     assert result["results"][0]["golden_status"] == "matched"
     assert Path(result["report_path"]).exists()
 
+
+def test_run_scenario_prefers_expert_golden_json(tmp_path: Path, monkeypatch) -> None:
+    expert_dir = tmp_path / "expert-goldens"
+    monkeypatch.setattr(scenario_runner, "SCENARIO_GOLDEN_DIR", tmp_path / "legacy-golden")
+    monkeypatch.setattr(scenario_runner, "SCENARIO_RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(scenario_golden_store, "SCENARIO_EXPERT_GOLDEN_DIR", expert_dir)
+    scenario_runner.SCENARIO_GOLDEN_DIR.mkdir()
+    expert_dir.mkdir()
+    (scenario_runner.SCENARIO_GOLDEN_DIR / "scenario-test.summary.json").write_text(
+        json.dumps({"selected_hydrant": {"name": "Legacy Hydrant"}, "closure_count": 99, "closures": []}),
+        encoding="utf-8",
+    )
+    (expert_dir / "scenario-test.json").write_text(
+        json.dumps(
+            {
+                "scenario_id": "scenario-test",
+                "reviewer": "expert",
+                "reviewed_at": "2026-06-24",
+                "updated_at": "2026-06-24T00:00:00Z",
+                "expected_hydrant": {"name": "Hydrant 1", "source": "test", "source_id": "hydrant-1", "notes": ""},
+                "expected_closures": [{"road": "Main St", "reason": "", "notes": ""}],
+                "expected_warning_signs": [
+                    {"road": "Main St", "sign_label": "Road Closed Ahead", "distance_ft": 100, "notes": ""}
+                ],
+                "notes": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = scenario_runner.run_scenario(_scenario(), tmp_path / "runs" / "run", planner=_fake_plan)
+
+    assert result.status == "passed"
+    assert result.golden_status == "expert_matched"

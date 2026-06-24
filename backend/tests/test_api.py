@@ -117,7 +117,7 @@ def test_scenario_route_crud_and_run(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(
         "app.routes.scenarios.run_scenarios",
-        lambda scenario_id: {
+        lambda scenario_id, active_only=True: {
             "run_dir": str(tmp_path / "run"),
             "report_path": str(tmp_path / "run" / "report.html"),
             "results": [{"scenario_id": scenario_id, "status": "passed", "golden_status": "missing"}],
@@ -155,8 +155,31 @@ def test_scenario_route_not_found(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(
         "app.routes.scenarios.run_scenarios",
-        lambda scenario_id: {"run_dir": "", "report_path": "", "results": []},
+        lambda scenario_id, active_only=True: {"run_dir": "", "report_path": "", "results": []},
     )
     with pytest.raises(HTTPException) as run_error:
         run_single_scenario("not-real")
     assert run_error.value.status_code == 404
+
+
+def test_inactive_scenario_route_conflict(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.scenario_store.SCENARIOS_CSV", tmp_path / "incidents.csv")
+    created = create_scenario(
+        ScenarioIn(
+            name="Inactive Scenario",
+            lat=40.2,
+            lon=-75.3,
+            incident_radius_ft=300,
+            study_radius_ft=2500,
+            hose_max_ft=500,
+            reviewer_notes="",
+            expected_hydrant_hint="",
+            expected_closure_hint="",
+            status="inactive",
+        )
+    )
+
+    with pytest.raises(HTTPException) as run_error:
+        run_single_scenario(created.scenario_id)
+    assert run_error.value.status_code == 409
+    assert run_error.value.detail == "Scenario is inactive"

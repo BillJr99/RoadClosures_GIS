@@ -94,13 +94,48 @@ def _lonlat_from_xy(graph: Any, x: float, y: float) -> tuple[float, float]:
     return float(lon), float(lat)
 
 
-def _approach_point(graph: Any, u: int, v: int, distance_ft: float) -> tuple[float, float, list[int], str, str]:
+def _edge_source(graph: Any, u: int, v: int) -> dict[str, Any]:
+    data = graph.get_edge_data(u, v) or graph.get_edge_data(v, u) or {}
+    if isinstance(data, dict) and all(isinstance(key, int) for key in data.keys()):
+        data = min(data.values(), key=lambda item: float(item.get("length", 1.0)))
+    return data.get("source_data") or data
+
+
+def _road_name(data: dict[str, Any]) -> str:
+    name = data.get("county_st_name") or data.get("name") or data.get("St_Name") or ""
+    if isinstance(name, list):
+        name = name[0] if name else ""
+    return str(name or "").strip().lower()
+
+
+def _approach_candidates(graph: Any, current: int, previous: int, closure_name: str) -> list[int]:
+    nodes = {
+        int(node)
+        for node in [*graph.predecessors(current), *graph.successors(current)]
+        if int(node) != int(previous)
+    }
+    return sorted(
+        nodes,
+        key=lambda node: (
+            _road_name(_edge_source(graph, current, node)) != closure_name,
+            float(_edge_source(graph, current, node).get("length", 0.0) or 0.0),
+        ),
+    )
+
+
+def _approach_point(
+    graph: Any,
+    u: int,
+    v: int,
+    distance_ft: float,
+    closure_name: str,
+) -> tuple[float, float, list[int], str, str]:
     remaining_m = distance_ft * FT_TO_M
     current = u
     previous = v
     path = [v, u]
     while True:
-        candidates = [int(node) for node in graph.predecessors(current) if int(node) != int(previous)]
+        candidates = _approach_candidates(graph, current, previous, closure_name)
         if not candidates:
             lon, lat = _point_upstream(graph, u, v, distance_ft)
             return lon, lat, path, "limited", "insufficient upstream graph path; projected from closure segment"
@@ -121,8 +156,14 @@ def _approach_point(graph: Any, u: int, v: int, distance_ft: float) -> tuple[flo
             return lon, lat, path, "limited", "approach path search limit reached"
 
 
-def warning_sign_features(graph: Any, closures: list[tuple[int, int, dict[str, Any]]]) -> dict[str, Any]:
+def warning_sign_features(
+    graph: Any,
+    closures: list[tuple[int, int, dict[str, Any]]],
+    *,
+    max_distance_ft: float | None = None,
+) -> dict[str, Any]:
     features = []
+    placed_keys: set[tuple[str, str, int, int]] = set()
     for closure_rank, (u, v, data) in enumerate(closures, start=1):
         source = data.get("source_data") or data
         road_type = road_type_for_edge(source)
@@ -130,31 +171,46 @@ def warning_sign_features(graph: Any, closures: list[tuple[int, int, dict[str, A
         name = source.get("county_st_name") or source.get("name") or source.get("St_Name") or "closure"
         if isinstance(name, list):
             name = name[0]
-        cumulative = 0.0
-        for sequence in ("A", "B", "C"):
-            cumulative += spacing[sequence]
-            lon, lat, approach_path, placement_status, placement_warning = _approach_point(graph, u, v, cumulative)
-            features.append(
-                point_feature(
-                    lon,
-                    lat,
-                    {
-                        "kind": "warning_sign",
-                        "closure_rank": closure_rank,
-                        "sequence": sequence,
-                        "sign_label": "ROAD CLOSED AHEAD" if sequence == "A" else "INCIDENT AHEAD",
-                        "approach_road": name,
-                        "road_type": road_type,
-                        "spacing_ft": spacing[sequence],
-                        "distance_from_closure_ft": cumulative,
-                        "mutcd_table": "MUTCD 11th Edition Revision 1 Table 6B-1",
-                        "mutcd_spacing_source": "Table 6B-1",
-                        "placement_status": placement_status,
-                        "placement_warning": placement_warning,
-                        "approach_path": approach_path,
-                        "advisory": True,
-                        "confidence": "draft",
-                    },
+        closure_name = _road_name(source)
+        for side, start, previous in (("u", u, v), ("v", v, u)):
+            cumulative = 0.0
+            for sequence in ("A", "B", "C"):
+                cumulative += spacing[sequence]
+                if max_distance_ft is not None and cumulative > max_distance_ft:
+                    continue
+                lon, lat, approach_path, placement_status, placement_warning = _approach_point(
+                    graph,
+                    start,
+                    previous,
+                    cumulative,
+                    closure_name,
                 )
-            )
+                dedupe_key = (str(name).lower(), sequence, round(lon, 4), round(lat, 4))
+                if dedupe_key in placed_keys:
+                    continue
+                placed_keys.add(dedupe_key)
+                features.append(
+                    point_feature(
+                        lon,
+                        lat,
+                        {
+                            "kind": "warning_sign",
+                            "closure_rank": closure_rank,
+                            "closure_side": side,
+                            "sequence": sequence,
+                            "sign_label": "ROAD CLOSED AHEAD" if sequence == "A" else "INCIDENT AHEAD",
+                            "approach_road": name,
+                            "road_type": road_type,
+                            "spacing_ft": spacing[sequence],
+                            "distance_from_closure_ft": cumulative,
+                            "mutcd_table": "MUTCD 11th Edition Revision 1 Table 6B-1",
+                            "mutcd_spacing_source": "Table 6B-1",
+                            "placement_status": placement_status,
+                            "placement_warning": placement_warning,
+                            "approach_path": approach_path,
+                            "advisory": True,
+                            "confidence": "draft",
+                        },
+                    )
+                )
     return {"type": "FeatureCollection", "features": features}

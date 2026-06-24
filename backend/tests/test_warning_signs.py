@@ -17,8 +17,9 @@ def test_mutcd_table_defaults_and_warning_sign_output() -> None:
     graph.add_edge(0, 1, length=100.0)
     signs = warning_sign_features(graph, [(1, 2, {"source_data": {"highway": "residential", "name": "Main St"}})])
 
-    assert len(signs["features"]) == 3
+    assert len(signs["features"]) == 6
+    assert {feature["properties"]["closure_side"] for feature in signs["features"]} == {"u", "v"}
     assert signs["features"][0]["properties"]["sequence"] == "A"
     assert signs["features"][0]["properties"]["mutcd_table"] == "MUTCD 11th Edition Revision 1 Table 6B-1"
     assert signs["features"][0]["properties"]["placement_status"] == "placed"
-    assert signs["features"][1]["properties"]["placement_status"] == "limited"
+    assert any(feature["properties"]["placement_status"] == "limited" for feature in signs["features"])

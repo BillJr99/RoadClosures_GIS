@@ -24,6 +24,14 @@ class IncidentPlanRequest(BaseModel):
     study_radius_ft: float = Field(default=2500.0, gt=0)
     hose_max_ft: float = Field(default=500.0, gt=0)
     incident_class: str = "minor"
+    hydrant_count: int = Field(default=1, ge=1, le=4)
+    secondary_incidents: list["IncidentPoint"] = Field(default_factory=list)
+    sign_max_distance_ft: float = Field(default=1500.0, gt=0)
+
+
+class IncidentPoint(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
 
 
 class GeocodeResult(BaseModel):
@@ -48,6 +56,40 @@ class ScenarioIn(BaseModel):
 class Scenario(ScenarioIn):
     scenario_id: str
     updated_at: str
+
+
+class ScenarioGoldenHydrant(BaseModel):
+    name: str = ""
+    source: str = ""
+    source_id: str = ""
+    notes: str = ""
+
+
+class ScenarioGoldenClosure(BaseModel):
+    road: str = ""
+    reason: str = ""
+    notes: str = ""
+
+
+class ScenarioGoldenWarningSign(BaseModel):
+    road: str = ""
+    sign_label: str = ""
+    distance_ft: float | None = None
+    notes: str = ""
+
+
+class ScenarioGoldenIn(BaseModel):
+    reviewer: str = ""
+    reviewed_at: str = ""
+    expected_hydrant: ScenarioGoldenHydrant = Field(default_factory=ScenarioGoldenHydrant)
+    expected_closures: list[ScenarioGoldenClosure] = Field(default_factory=list)
+    expected_warning_signs: list[ScenarioGoldenWarningSign] = Field(default_factory=list)
+    notes: str = ""
+
+
+class ScenarioGolden(ScenarioGoldenIn):
+    scenario_id: str
+    updated_at: str = ""
 
 
 class ScenarioRunSummary(BaseModel):

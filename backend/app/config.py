@@ -11,6 +11,7 @@ GENERATED_DIR = DATA_ROOT / "generated"
 SCENARIO_DIR = DATA_ROOT / "scenarios"
 SCENARIO_RUNS_DIR = DATA_ROOT / "scenario_runs"
 SCENARIO_GOLDEN_DIR = DATA_ROOT / "scenario_golden"
+SCENARIO_EXPERT_GOLDEN_DIR = SCENARIO_DIR / "goldens"
 GRAPH_CACHE_DIR = GENERATED_DIR / "graph_cache"
 
 
@@ -61,3 +62,4 @@ def ensure_data_dirs() -> None:
     SCENARIO_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_RUNS_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+    SCENARIO_EXPERT_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)

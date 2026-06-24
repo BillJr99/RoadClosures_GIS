@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from app.config import SCENARIO_GOLDEN_DIR, SCENARIO_RUNS_DIR, ensure_data_dirs
 from app.models import IncidentPlanRequest, Scenario, ScenarioRunSummary
+from app.scenario_golden_store import read_scenario_golden, scenario_golden_exists
 from app.scenario_store import get_scenario, list_scenarios
 from app.services.planner import plan_incident
 
@@ -16,6 +17,16 @@ PlannerFn = Callable[[IncidentPlanRequest], dict[str, Any]]
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _run_dir(prefix: str = "") -> Path:
+    base = f"{prefix}{_timestamp()}"
+    run_dir = SCENARIO_RUNS_DIR / base
+    suffix = 1
+    while run_dir.exists():
+        run_dir = SCENARIO_RUNS_DIR / f"{base}-{suffix}"
+        suffix += 1
+    return run_dir
 
 
 def request_from_scenario(scenario: Scenario) -> IncidentPlanRequest:
@@ -30,6 +41,7 @@ def request_from_scenario(scenario: Scenario) -> IncidentPlanRequest:
 
 def scenario_summary(plan: dict[str, Any]) -> dict[str, Any]:
     selected = plan.get("selected_hydrant", {}).get("properties", {})
+    warning_features = plan.get("warning_signs", {}).get("features", [])
     return {
         "cut_value": plan.get("cut_value"),
         "selected_hydrant": {
@@ -49,10 +61,126 @@ def scenario_summary(plan: dict[str, Any]) -> dict[str, Any]:
             for item in plan.get("ranked_closures", [])
         ],
         "hose_route": plan.get("hose_route", {}).get("properties", {}),
+        "warning_signs": [
+            {
+                "road": feature.get("properties", {}).get("approach_road"),
+                "sign_label": feature.get("properties", {}).get("sign_label")
+                or feature.get("properties", {}).get("sequence"),
+                "distance_ft": feature.get("properties", {}).get("distance_from_closure_ft"),
+                "placement_status": feature.get("properties", {}).get("placement_status"),
+            }
+            for feature in warning_features
+        ],
     }
 
 
+def write_planner_debug_logs(target_dir: Path, plan: dict[str, Any]) -> None:
+    debug = plan.get("_debug")
+    if not isinstance(debug, dict):
+        return
+    (target_dir / "planner_debug.json").write_text(json.dumps(debug, indent=2), encoding="utf-8")
+    hydrant_filter = debug.get("hydrant_filter", {})
+    selected = debug.get("selected_hydrants", [])
+    lines = [
+        "Planner debug",
+        f"request: {debug.get('request')}",
+        f"graph_source: {debug.get('graph_source')}",
+        f"hydrant_filter: {hydrant_filter}",
+        f"closure_count: {debug.get('closure_count')}",
+        f"warning_sign_count: {debug.get('warning_sign_count')}",
+        "selected_hydrants:",
+    ]
+    for item in selected:
+        lines.append(
+            "  "
+            f"{item.get('source') or ''} {item.get('name') or ''} "
+            f"coords={item.get('coordinates')} "
+            f"length_ft={item.get('length_ft')} "
+            f"direct_ft={item.get('direct_distance_ft')} "
+            f"snap_ft={item.get('hydrant_snap_ft')}/{item.get('incident_snap_ft')} "
+            f"path_nodes={item.get('path_node_count')}"
+        )
+    lines.append("top_hydrant_candidates:")
+    for item in debug.get("top_hydrant_candidates", []):
+        lines.append(
+            "  "
+            f"{item.get('source') or ''} {item.get('name') or ''} "
+            f"coords={item.get('coordinates')} "
+            f"length_ft={item.get('length_ft')} "
+            f"direct_ft={item.get('direct_distance_ft')} "
+            f"snap_ft={item.get('hydrant_snap_ft')}/{item.get('incident_snap_ft')} "
+            f"path_nodes={item.get('path_node_count')}"
+        )
+    (target_dir / "planner_debug.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_planner_failure_log(target_dir: Path, request: IncidentPlanRequest, error: str) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    debug = {
+        "request": request.model_dump(),
+        "error": error,
+    }
+    (target_dir / "planner_debug.json").write_text(json.dumps(debug, indent=2), encoding="utf-8")
+    (target_dir / "planner_debug.log").write_text(
+        "Planner failed\n"
+        f"request: {debug['request']}\n"
+        f"error: {error}\n",
+        encoding="utf-8",
+    )
+
+
+def _matches_text(expected: str, current: str | None) -> bool:
+    if not expected.strip():
+        return True
+    if not current:
+        return False
+    expected_norm = expected.strip().lower()
+    current_norm = current.strip().lower()
+    return expected_norm in current_norm or current_norm in expected_norm
+
+
+def compare_to_expert_golden(scenario_id: str, summary: dict[str, Any]) -> tuple[str, list[str]] | None:
+    if not scenario_golden_exists(scenario_id):
+        return None
+    golden = read_scenario_golden(scenario_id)
+    differences: list[str] = []
+    selected = summary.get("selected_hydrant", {})
+    hydrant = golden.expected_hydrant
+    if hydrant.source_id and hydrant.source_id != selected.get("source_id"):
+        differences.append("expert expected hydrant source_id changed")
+    if hydrant.source and not _matches_text(hydrant.source, selected.get("source")):
+        differences.append("expert expected hydrant source changed")
+    if hydrant.name and not _matches_text(hydrant.name, selected.get("name")):
+        differences.append("expert expected hydrant name changed")
+
+    current_closures = [str(item.get("name") or "") for item in summary.get("closures", [])]
+    for closure in golden.expected_closures:
+        if closure.road.strip() and not any(_matches_text(closure.road, current) for current in current_closures):
+            differences.append(f"expert expected closure missing: {closure.road}")
+
+    current_signs = summary.get("warning_signs", [])
+    for sign in golden.expected_warning_signs:
+        if not sign.road.strip() and not sign.sign_label.strip():
+            continue
+        found = False
+        for current in current_signs:
+            road_matches = _matches_text(sign.road, current.get("road"))
+            label_matches = _matches_text(sign.sign_label, current.get("sign_label"))
+            found = road_matches and label_matches
+            if found:
+                break
+        if not found:
+            label = sign.sign_label or "sign"
+            road = sign.road or "unspecified road"
+            differences.append(f"expert expected warning sign missing: {label} on {road}")
+
+    return ("expert_changed" if differences else "expert_matched"), differences
+
+
 def compare_to_golden(scenario_id: str, summary: dict[str, Any]) -> tuple[str, list[str]]:
+    expert_result = compare_to_expert_golden(scenario_id, summary)
+    if expert_result is not None:
+        return expert_result
     golden_path = SCENARIO_GOLDEN_DIR / f"{scenario_id}.summary.json"
     if not golden_path.exists():
         return "missing", ["No golden summary exists yet"]
@@ -74,7 +202,8 @@ def write_html_report(run_dir: Path, results: list[ScenarioRunSummary]) -> Path:
     report_path = run_dir / "report.html"
     rows = []
     for result in results:
-        status_class = "ok" if result.status == "passed" and result.golden_status in ("matched", "missing") else "warn"
+        ok_golden_statuses = ("matched", "missing", "expert_matched")
+        status_class = "ok" if result.status == "passed" and result.golden_status in ok_golden_statuses else "warn"
         rows.append(
             "<tr>"
             f"<td>{result.scenario_id}</td>"
@@ -127,8 +256,9 @@ def run_scenario(
 ) -> ScenarioRunSummary:
     scenario_dir = run_dir / scenario.scenario_id
     scenario_dir.mkdir(parents=True, exist_ok=True)
+    request = request_from_scenario(scenario)
     try:
-        plan = planner(request_from_scenario(scenario))
+        plan = planner(request)
         if not plan.get("selected_hydrant"):
             raise ValueError("Planner output missing selected_hydrant")
         if not plan.get("hose_route"):
@@ -145,6 +275,7 @@ def run_scenario(
         output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
         summary_path = scenario_dir / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        write_planner_debug_logs(scenario_dir, plan)
         golden_status, differences = compare_to_golden(scenario.scenario_id, summary)
         return ScenarioRunSummary(
             scenario_id=scenario.scenario_id,
@@ -155,6 +286,7 @@ def run_scenario(
             differences=differences,
         )
     except Exception as e:
+        write_planner_failure_log(scenario_dir, request, str(e))
         return ScenarioRunSummary(
             scenario_id=scenario.scenario_id,
             name=scenario.name,
@@ -176,17 +308,92 @@ def run_scenarios(
     selected = [scenario for scenario in scenarios if scenario is not None]
     if active_only:
         selected = [scenario for scenario in selected if scenario.status == "active"]
-    run_dir = SCENARIO_RUNS_DIR / _timestamp()
+    run_dir = _run_dir()
     run_dir.mkdir(parents=True, exist_ok=True)
     results = [run_scenario(scenario, run_dir, planner=planner) for scenario in selected]
     report_path = write_html_report(run_dir, results)
     summary = {
+        "run_id": run_dir.name,
         "run_dir": str(run_dir),
         "report_path": str(report_path),
         "results": [result.model_dump() for result in results],
     }
     (run_dir / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
+
+
+def save_ad_hoc_plan(req: IncidentPlanRequest, plan: dict[str, Any]) -> dict[str, str]:
+    ensure_data_dirs()
+    run_dir = _run_dir("adhoc-")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    scenario_id = f"adhoc-{run_dir.name.removeprefix('adhoc-')}"
+    scenario = Scenario(
+        scenario_id=scenario_id,
+        name="Ad hoc incident",
+        lat=req.lat,
+        lon=req.lon,
+        incident_radius_ft=req.incident_radius_ft,
+        study_radius_ft=req.study_radius_ft,
+        hose_max_ft=req.hose_max_ft,
+        reviewer_notes="Saved from Recommend Closures",
+        expected_hydrant_hint="",
+        expected_closure_hint="",
+        status="active",
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
+    scenario_dir = run_dir / scenario_id
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    summary = scenario_summary(plan)
+    output_path = scenario_dir / "plan.json"
+    output_path.write_text(
+        json.dumps({"scenario": scenario.model_dump(), "summary": summary, "plan": plan}, indent=2),
+        encoding="utf-8",
+    )
+    (scenario_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    write_planner_debug_logs(scenario_dir, plan)
+    result = ScenarioRunSummary(
+        scenario_id=scenario_id,
+        name=scenario.name,
+        status="passed",
+        output_path=str(output_path),
+        golden_status="not_checked",
+        differences=["Ad hoc incident run"],
+    )
+    report_path = write_html_report(run_dir, [result])
+    run_summary = {
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "report_path": str(report_path),
+        "results": [result.model_dump()],
+    }
+    (run_dir / "run_summary.json").write_text(json.dumps(run_summary, indent=2), encoding="utf-8")
+    return {"run_id": run_dir.name, "scenario_id": scenario_id, "report_path": str(report_path)}
+
+
+def save_ad_hoc_failure(req: IncidentPlanRequest, error: str) -> dict[str, str]:
+    ensure_data_dirs()
+    run_dir = _run_dir("adhoc-")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    scenario_id = f"adhoc-{run_dir.name.removeprefix('adhoc-')}"
+    scenario_dir = run_dir / scenario_id
+    write_planner_failure_log(scenario_dir, req, error)
+    result = ScenarioRunSummary(
+        scenario_id=scenario_id,
+        name="Ad hoc incident",
+        status="failed",
+        golden_status="not_checked",
+        differences=[],
+        error=error,
+    )
+    report_path = write_html_report(run_dir, [result])
+    run_summary = {
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "report_path": str(report_path),
+        "results": [result.model_dump()],
+    }
+    (run_dir / "run_summary.json").write_text(json.dumps(run_summary, indent=2), encoding="utf-8")
+    return {"run_id": run_dir.name, "scenario_id": scenario_id, "report_path": str(report_path)}
 
 
 def update_golden_from_run(run_dir: Path) -> int:
