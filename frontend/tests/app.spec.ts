@@ -24,8 +24,25 @@ const hydrants = {
 
 test("exercises incident planning, geocoding, manual hydrants, layer rebuild, and overlays", async ({ page }) => {
   let manualHydrants: Array<Record<string, unknown>> = [];
+  let scenarios: Array<Record<string, unknown>> = [
+    {
+      scenario_id: "scenario-test",
+      name: "Existing Scenario",
+      lat: 40.212,
+      lon: -75.302,
+      incident_radius_ft: 300,
+      study_radius_ft: 2500,
+      hose_max_ft: 500,
+      reviewer_notes: "",
+      expected_hydrant_hint: "blue hydrant",
+      expected_closure_hint: "Main St",
+      status: "active",
+      updated_at: "2026-06-23T00:00:00Z",
+    },
+  ];
   let buildCalled = false;
   let planCalled = false;
+  let scenarioRunCalled = false;
 
   await page.route("**/api/layers/roads", async (route) => {
     await route.fulfill({ json: roads });
@@ -46,6 +63,49 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.route("**/api/manual-hydrants/manual-test", async (route) => {
     manualHydrants = [];
     await route.fulfill({ status: 204, body: "" });
+  });
+  await page.route("**/api/scenarios", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: scenarios });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    const created = { ...body, scenario_id: "scenario-new", updated_at: "2026-06-23T00:00:00Z" };
+    scenarios = [...scenarios, created];
+    await route.fulfill({ status: 201, json: created });
+  });
+  await page.route("**/api/scenarios/scenario-new", async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON();
+      const updated = { ...body, scenario_id: "scenario-new", updated_at: "2026-06-23T00:01:00Z" };
+      scenarios = scenarios.map((scenario) => (scenario.scenario_id === "scenario-new" ? updated : scenario));
+      await route.fulfill({ json: updated });
+      return;
+    }
+    if (route.request().method() === "DELETE") {
+      scenarios = scenarios.filter((scenario) => scenario.scenario_id !== "scenario-new");
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/api/scenarios/scenario-new/run", async (route) => {
+    scenarioRunCalled = true;
+    await route.fulfill({
+      json: {
+        run_dir: "data/scenario_runs/20260624T120000Z",
+        report_path: "data/scenario_runs/20260624T120000Z/report.html",
+        results: [
+          {
+            scenario_id: "scenario-new",
+            name: "Edited Scenario",
+            status: "passed",
+            golden_status: "missing",
+            differences: ["No golden summary exists yet"],
+          },
+        ],
+      },
+    });
   });
   await page.route("**/api/geocode?q=*", async (route) => {
     await route.fulfill({
@@ -101,7 +161,27 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByTitle("Search address").click();
   await expect(page.getByText("40.215000, -75.305000")).toBeVisible();
 
-  await page.getByPlaceholder("Name").fill("Known Hydrant");
+  await page.getByPlaceholder("Scenario name").fill("Test Scenario");
+  await page.getByPlaceholder("Expected hydrant hint").fill("blue hydrant");
+  await page.getByPlaceholder("Expected closure hint").fill("Main St");
+  await page.getByTitle("Save scenario").click();
+  await expect(page.locator(".scenario-row").filter({ hasText: "Test Scenario" })).toBeVisible();
+
+  await page.getByTitle("Edit scenario").last().click();
+  await page.getByPlaceholder("Scenario name").fill("Edited Scenario");
+  await page.getByTitle("Update scenario").click();
+  await expect(page.locator(".scenario-row").filter({ hasText: "Edited Scenario" })).toBeVisible();
+
+  await page.getByTitle("Load scenario").last().click();
+  await expect(page.getByText(/Loaded scenario: Edited Scenario/i)).toBeVisible();
+  await page.getByTitle("Run scenario").last().click();
+  await expect(page.getByText(/Last scenario run/i)).toBeVisible();
+  expect(scenarioRunCalled).toBe(true);
+
+  await page.getByTitle("Delete scenario").last().click();
+  await expect(page.locator(".scenario-row").filter({ hasText: "Edited Scenario" })).toHaveCount(0);
+
+  await page.getByPlaceholder("Name", { exact: true }).fill("Known Hydrant");
   await page.getByPlaceholder("Lat").fill("40.216");
   await page.getByPlaceholder("Lon").fill("-75.306");
   await page.getByTitle("Add manual hydrant").click();
@@ -117,4 +197,3 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await expect(page.getByText("#1 Main St")).toBeVisible();
   expect(planCalled).toBe(true);
 });
-

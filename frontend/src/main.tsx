@@ -9,7 +9,20 @@ import {
   useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
-import { Droplets, MapPin, Plus, Route, Search, ShieldAlert, Trash2 } from "lucide-react";
+import {
+  Check,
+  Droplets,
+  FileCheck2,
+  MapPin,
+  Pencil,
+  Play,
+  Plus,
+  Route,
+  Search,
+  ShieldAlert,
+  Trash2,
+  X,
+} from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import "./styles.css";
 import { formatCoords } from "./format";
@@ -32,6 +45,21 @@ type ManualHydrant = {
 
 type Incident = { lat: number; lon: number };
 
+type Scenario = {
+  scenario_id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  incident_radius_ft: number;
+  study_radius_ft: number;
+  hose_max_ft: number;
+  reviewer_notes: string;
+  expected_hydrant_hint: string;
+  expected_closure_hint: string;
+  status: string;
+  updated_at: string;
+};
+
 type PlanResponse = {
   cut_value: number;
   selected_hydrant: GeoJSON.Feature;
@@ -40,6 +68,19 @@ type PlanResponse = {
   overlays: FeatureCollection;
   ranked_closures: Array<Record<string, unknown>>;
   hydrant_candidates: Array<Record<string, unknown>>;
+};
+
+type ScenarioRunResult = {
+  run_dir: string;
+  report_path: string;
+  results: Array<{
+    scenario_id: string;
+    name: string;
+    status: string;
+    golden_status: string;
+    differences: string[];
+    error?: string;
+  }>;
 };
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -67,9 +108,12 @@ function App() {
   const [roads, setRoads] = useState<FeatureCollection | null>(null);
   const [hydrants, setHydrants] = useState<FeatureCollection | null>(null);
   const [manualHydrants, setManualHydrants] = useState<ManualHydrant[]>([]);
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [editingScenarioId, setEditingScenarioId] = useState<string | null>(null);
   const [incident, setIncident] = useState<Incident | null>(null);
   const [address, setAddress] = useState("");
   const [plan, setPlan] = useState<PlanResponse | null>(null);
+  const [scenarioRun, setScenarioRun] = useState<ScenarioRunResult | null>(null);
   const [message, setMessage] = useState("Load generated layers, then pick an incident.");
   const [manualDraft, setManualDraft] = useState({
     name: "",
@@ -79,19 +123,36 @@ function App() {
     source_note: "",
     status: "active",
   });
+  const [scenarioDraft, setScenarioDraft] = useState({
+    name: "",
+    incident_radius_ft: "300",
+    study_radius_ft: "2500",
+    hose_max_ft: "500",
+    reviewer_notes: "",
+    expected_hydrant_hint: "",
+    expected_closure_hint: "",
+    status: "active",
+  });
 
   async function loadLayers() {
-    const [roadLayer, hydrantLayer, manual] = await Promise.all([
+    const [roadLayer, hydrantLayer, manual, scenarioRecords] = await Promise.all([
       jsonFetch<FeatureCollection>(`${API}/layers/roads`),
       jsonFetch<FeatureCollection>(`${API}/layers/hydrants`),
       jsonFetch<ManualHydrant[]>(`${API}/manual-hydrants`),
+      jsonFetch<Scenario[]>(`${API}/scenarios`),
     ]);
     setRoads(roadLayer);
     setHydrants(hydrantLayer);
     setManualHydrants(manual);
+    setScenarios(scenarioRecords);
     setMessage(
-      `${roadLayer.features.length} roads, ${hydrantLayer.features.length} hydrants, ${manual.length} manual hydrants loaded.`,
+      `${roadLayer.features.length} roads, ${hydrantLayer.features.length} hydrants, ${manual.length} manual hydrants, ${scenarioRecords.length} scenarios loaded.`,
     );
+  }
+
+  async function loadScenarios() {
+    const scenarioRecords = await jsonFetch<Scenario[]>(`${API}/scenarios`);
+    setScenarios(scenarioRecords);
   }
 
   async function buildLayers() {
@@ -131,6 +192,111 @@ function App() {
     });
     setPlan(result);
     setMessage(`Plan ready: ${result.ranked_closures.length} closure recommendations.`);
+  }
+
+  function scenarioPayload() {
+    const incidentRadius = Number(scenarioDraft.incident_radius_ft);
+    const studyRadius = Number(scenarioDraft.study_radius_ft);
+    const hoseMax = Number(scenarioDraft.hose_max_ft);
+    if (!incident) {
+      setMessage("Pick an incident location before saving a scenario.");
+      return null;
+    }
+    if (![incidentRadius, studyRadius, hoseMax].every(Number.isFinite)) {
+      setMessage("Scenario distances must be valid numbers.");
+      return null;
+    }
+    return {
+      ...scenarioDraft,
+      name: scenarioDraft.name.trim() || "Untitled scenario",
+      lat: incident.lat,
+      lon: incident.lon,
+      incident_radius_ft: incidentRadius,
+      study_radius_ft: studyRadius,
+      hose_max_ft: hoseMax,
+    };
+  }
+
+  function resetScenarioDraft() {
+    setEditingScenarioId(null);
+    setScenarioDraft({
+      name: "",
+      incident_radius_ft: "300",
+      study_radius_ft: "2500",
+      hose_max_ft: "500",
+      reviewer_notes: "",
+      expected_hydrant_hint: "",
+      expected_closure_hint: "",
+      status: "active",
+    });
+  }
+
+  async function saveScenario() {
+    const payload = scenarioPayload();
+    if (!payload) return;
+    if (editingScenarioId) {
+      await jsonFetch<Scenario>(`${API}/scenarios/${editingScenarioId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setMessage(`Scenario updated: ${payload.name}`);
+    } else {
+      await jsonFetch<Scenario>(`${API}/scenarios`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setMessage(`Scenario saved: ${payload.name}`);
+    }
+    resetScenarioDraft();
+    await loadScenarios();
+  }
+
+  function editScenario(scenario: Scenario) {
+    setEditingScenarioId(scenario.scenario_id);
+    setIncident({ lat: scenario.lat, lon: scenario.lon });
+    setScenarioDraft({
+      name: scenario.name,
+      incident_radius_ft: String(scenario.incident_radius_ft),
+      study_radius_ft: String(scenario.study_radius_ft),
+      hose_max_ft: String(scenario.hose_max_ft),
+      reviewer_notes: scenario.reviewer_notes,
+      expected_hydrant_hint: scenario.expected_hydrant_hint,
+      expected_closure_hint: scenario.expected_closure_hint,
+      status: scenario.status,
+    });
+    setMessage(`Editing scenario: ${scenario.name}`);
+  }
+
+  function loadScenario(scenario: Scenario) {
+    setIncident({ lat: scenario.lat, lon: scenario.lon });
+    setScenarioDraft({
+      name: scenario.name,
+      incident_radius_ft: String(scenario.incident_radius_ft),
+      study_radius_ft: String(scenario.study_radius_ft),
+      hose_max_ft: String(scenario.hose_max_ft),
+      reviewer_notes: scenario.reviewer_notes,
+      expected_hydrant_hint: scenario.expected_hydrant_hint,
+      expected_closure_hint: scenario.expected_closure_hint,
+      status: scenario.status,
+    });
+    setMessage(`Loaded scenario: ${scenario.name}`);
+  }
+
+  async function removeScenario(id: string) {
+    await jsonFetch(`${API}/scenarios/${id}`, { method: "DELETE" });
+    if (editingScenarioId === id) resetScenarioDraft();
+    await loadScenarios();
+    setMessage("Scenario removed.");
+  }
+
+  async function runScenario(id: string) {
+    const result = await jsonFetch<ScenarioRunResult>(`${API}/scenarios/${id}/run`, { method: "POST" });
+    setScenarioRun(result);
+    const first = result.results[0];
+    const status = first ? `${first.status}, golden ${first.golden_status}` : "no active scenario run";
+    setMessage(`Scenario run complete: ${status}.`);
   }
 
   async function addManualHydrant() {
@@ -210,6 +376,84 @@ function App() {
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="panel">
+          <h2><FileCheck2 size={18} /> Scenarios</h2>
+          <input
+            value={scenarioDraft.name}
+            onChange={(e) => setScenarioDraft({ ...scenarioDraft, name: e.target.value })}
+            placeholder="Scenario name"
+          />
+          <div className="inline three">
+            <input
+              value={scenarioDraft.incident_radius_ft}
+              onChange={(e) => setScenarioDraft({ ...scenarioDraft, incident_radius_ft: e.target.value })}
+              placeholder="Incident ft"
+            />
+            <input
+              value={scenarioDraft.study_radius_ft}
+              onChange={(e) => setScenarioDraft({ ...scenarioDraft, study_radius_ft: e.target.value })}
+              placeholder="Study ft"
+            />
+            <input
+              value={scenarioDraft.hose_max_ft}
+              onChange={(e) => setScenarioDraft({ ...scenarioDraft, hose_max_ft: e.target.value })}
+              placeholder="Hose ft"
+            />
+          </div>
+          <input
+            value={scenarioDraft.expected_hydrant_hint}
+            onChange={(e) => setScenarioDraft({ ...scenarioDraft, expected_hydrant_hint: e.target.value })}
+            placeholder="Expected hydrant hint"
+          />
+          <input
+            value={scenarioDraft.expected_closure_hint}
+            onChange={(e) => setScenarioDraft({ ...scenarioDraft, expected_closure_hint: e.target.value })}
+            placeholder="Expected closure hint"
+          />
+          <div className="inline">
+            <select
+              value={scenarioDraft.status}
+              onChange={(e) => setScenarioDraft({ ...scenarioDraft, status: e.target.value })}
+            >
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+            <button onClick={saveScenario} title={editingScenarioId ? "Update scenario" : "Save scenario"}>
+              {editingScenarioId ? <Check size={18} /> : <Plus size={18} />}
+            </button>
+          </div>
+          {editingScenarioId && (
+            <button onClick={resetScenarioDraft}><X size={18} /> Cancel Edit</button>
+          )}
+          <div className="list">
+            {scenarios.map((scenario) => (
+              <div className="scenario-row" key={scenario.scenario_id}>
+                <div>
+                  <strong>{scenario.name}</strong>
+                  <span>{formatCoords(scenario.lat, scenario.lon)} · {scenario.status}</span>
+                </div>
+                <div className="row-actions">
+                  <button onClick={() => loadScenario(scenario)} title="Load scenario"><MapPin size={16} /></button>
+                  <button onClick={() => editScenario(scenario)} title="Edit scenario"><Pencil size={16} /></button>
+                  <button onClick={() => runScenario(scenario.scenario_id)} title="Run scenario"><Play size={16} /></button>
+                  <button onClick={() => removeScenario(scenario.scenario_id)} title="Delete scenario"><Trash2 size={16} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+          {scenarioRun && (
+            <div className="scenario-result">
+              <strong>Last scenario run</strong>
+              <span>{scenarioRun.results.length} result(s) · {scenarioRun.report_path}</span>
+              {scenarioRun.results.map((result) => (
+                <span key={result.scenario_id}>
+                  {result.name}: {result.status}, golden {result.golden_status}
+                </span>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="panel">

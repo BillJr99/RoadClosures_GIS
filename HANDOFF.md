@@ -7,7 +7,10 @@ The repository contains a functional MVP implementation:
 - FastAPI backend in `backend/`
 - React + Leaflet frontend in `frontend/`
 - Manual hydrants CSV at `data/manual/manual_hydrants.csv`
+- Scenario CSV at `data/scenarios/incidents.csv`
 - GIS rebuild tooling in `scripts/rebuild_gis_data.sh`
+- Scenario validation tooling in `scripts/run_scenarios.sh` and
+  `scripts/update_scenario_golden.sh`
 - Full test runner in `scripts/test_all.sh`
 - Legacy prototype scripts and planning documents preserved at the repo root
 
@@ -19,10 +22,10 @@ git --git-dir=.repo.git --work-tree=. status
 git --git-dir=.repo.git --work-tree=. log --oneline --decorate -10
 ```
 
-Latest known clean commit before this handoff note:
+Latest known committed baseline before the current scenario UI/test work:
 
 ```text
-5e578e5 chore: ignore osmnx cache
+70d2173 feat: add scenario validation backend
 ```
 
 ## Generated Data
@@ -63,7 +66,18 @@ This runs:
 - backend unit/route tests with `pytest`
 - frontend unit tests with `vitest`
 - frontend TypeScript/Vite production build
-- Playwright browser orchestration test
+- Playwright browser orchestration test covering layer loading, geocoding,
+  manual hydrants, scenario CRUD/run controls, rebuild action, and closure
+  recommendation rendering
+
+Real incident scenario validation is opt-in:
+
+```bash
+RUN_SCENARIOS=1 scripts/test_all.sh
+```
+
+`scripts/run_scenarios.sh` exits nonzero on planner failures or changed golden
+summaries. Missing goldens are reported but do not fail the first reviewed run.
 
 In the Codex sandbox, Playwright/Vite server binding may require elevated
 execution. In a normal local shell, the script should run directly.
@@ -101,6 +115,12 @@ http://localhost:5173/
   - Nominatim geocoder
 - Manual hydrant CSV CRUD implemented in backend.
 - Manual hydrants can be added/removed from frontend.
+- Scenario CSV CRUD and single-scenario run endpoints implemented in backend.
+- Scenario records can be created, edited, loaded, run, and deleted from the
+  frontend.
+- Seeded active scenarios are present for Norristown, Lansdale, and Pottstown.
+- Scenario run reports are written under ignored `data/scenario_runs/`; reviewed
+  summaries can be promoted to `data/scenario_golden/`.
 - Reconciled hydrant layer is regenerated from authoritative + manual sources.
 - Road and hydrant layer endpoints are implemented.
 - Min-cut planner MVP is implemented:
@@ -108,13 +128,14 @@ http://localhost:5173/
   - scores hose paths by length, curvature, and elevation if available
   - protects hose-route edges
   - computes closure cut edges
-- Frontend map shows layers, incident selection, manual hydrants, and closure ranking.
+- Frontend map shows layers, incident selection, manual hydrants, scenarios, and
+  closure ranking.
 
 ## Recommended Next Work
 
-1. Validate planner behavior against real incident examples.
-   Use several known Montgomery County locations and compare selected hydrants,
-   hose routes, and closure recommendations against expert expectations.
+1. Run and review the seeded real incident scenarios.
+   Use `scripts/run_scenarios.sh`, inspect `data/scenario_runs/<timestamp>/`,
+   then promote accepted summaries with `scripts/update_scenario_golden.sh`.
 
 2. Improve routing graph strategy.
    Full county GraphML via Overpass is too slow. Prefer incident-local graph
@@ -138,4 +159,3 @@ http://localhost:5173/
 
 7. Add MUTCD advance-warning sign placement after core closure recommendations
    are validated.
-

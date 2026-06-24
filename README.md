@@ -89,7 +89,7 @@ The script runs:
 - frontend production build with Vite/TypeScript
 - Playwright browser orchestration tests that mock API responses and exercise
   layer loading, address search, manual hydrant add/remove, rebuild action, and
-  closure recommendation rendering
+  scenario CRUD/run controls, and closure recommendation rendering
 
 If Playwright browsers are missing, install them once:
 
@@ -107,7 +107,8 @@ RUN_SCENARIOS=1 scripts/test_all.sh
 ## Scenario Validation
 
 Incident scenarios are stored in `data/scenarios/incidents.csv`. They can be
-edited by hand or through the app. Run all active scenarios:
+edited by hand or through the app. The repo includes seeded active scenarios for
+Norristown, Lansdale, and Pottstown. Run all active scenarios:
 
 ```bash
 scripts/run_scenarios.sh
@@ -125,6 +126,10 @@ ignored by git. To promote a reviewed run to golden summaries:
 ```bash
 scripts/update_scenario_golden.sh data/scenario_runs/<timestamp>
 ```
+
+`scripts/run_scenarios.sh` exits nonzero if a scenario planner run fails or if a
+previously approved golden summary changes. Missing goldens are reported so the
+first reviewed run can be promoted.
 
 The backend serves API endpoints for GIS layer generation, manual hydrant
 editing, geocoding, and incident planning. The frontend is a React + Leaflet map
