@@ -9,6 +9,7 @@ import networkx as nx
 from app.config import RECONCILED_HYDRANTS_GEOJSON, ROAD_GRAPH_GRAPHML
 from app.geojson import line_feature, point_feature, read_geojson
 from app.models import IncidentPlanRequest
+from app.services.elevation import path_max_grade
 from app.services.graph_cache import graph_radius_m, load_or_fetch_graph
 from app.services.road_matching import enrich_graph_with_county_roads
 from app.services.warning_signs import warning_sign_features
@@ -47,6 +48,7 @@ class HydrantCandidate:
     length_m: float
     curvature: float
     elevation_change_m: float
+    max_grade: float
     score: float
 
 
@@ -180,8 +182,9 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int) ->
             continue
         curvature = _path_curvature(graph, path)
         elev_change = _path_elevation_change(graph, path)
+        max_grade = path_max_grade(graph, path)
         score = length_m + (curvature * 75.0) + (elev_change * 2.0)
-        candidates.append(HydrantCandidate(feature, hydrant_node, path, length_m, curvature, elev_change, score))
+        candidates.append(HydrantCandidate(feature, hydrant_node, path, length_m, curvature, elev_change, max_grade, score))
     return sorted(candidates, key=lambda item: item.score)
 
 
@@ -275,6 +278,11 @@ def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]
             "county_owner": source.get("county_owner"),
             "county_seg_id": source.get("county_seg_id"),
             "county_match_confidence": source.get("county_match_confidence"),
+            "county_match_distance_m": source.get("county_match_distance_m"),
+            "county_match_bearing_diff_deg": source.get("county_match_bearing_diff_deg"),
+            "grade": source.get("grade"),
+            "abs_grade": source.get("abs_grade"),
+            "elevation_change_m": source.get("elevation_change_m"),
             "reason": "Minimum cut closure edge; hose route protected",
             "sightline": "caution" if capacity >= 6 else "good",
         },
@@ -313,6 +321,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
             "length_ft": round(selected.length_m * M_TO_FT, 1),
             "curvature": round(selected.curvature, 4),
             "elevation_change_ft": round(selected.elevation_change_m * M_TO_FT, 1),
+            "max_grade": round(selected.max_grade, 5),
         },
     )
     incident_feature = point_feature(req.lon, req.lat, {"kind": "incident"})
@@ -338,6 +347,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
                 "length_ft": round(item.length_m * M_TO_FT, 1),
                 "curvature": round(item.curvature, 4),
                 "elevation_change_ft": round(item.elevation_change_m * M_TO_FT, 1),
+                "max_grade": round(item.max_grade, 5),
                 "score": round(item.score, 3),
             }
             for item in candidates[:10]

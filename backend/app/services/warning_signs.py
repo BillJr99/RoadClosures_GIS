@@ -73,6 +73,54 @@ def _point_upstream(graph: Any, u: int, v: int, distance_ft: float) -> tuple[flo
     return float(lon), float(lat)
 
 
+def _xy(graph: Any, node: int) -> tuple[float, float]:
+    data = graph.nodes[node]
+    return float(data["x"]), float(data["y"])
+
+
+def _interpolate(a: tuple[float, float], b: tuple[float, float], distance_from_a_m: float) -> tuple[float, float]:
+    ax, ay = a
+    bx, by = b
+    length = math.hypot(bx - ax, by - ay) or 1.0
+    ratio = max(0.0, min(1.0, distance_from_a_m / length))
+    return ax + (bx - ax) * ratio, ay + (by - ay) * ratio
+
+
+def _lonlat_from_xy(graph: Any, x: float, y: float) -> tuple[float, float]:
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs(graph.graph.get("crs"), "EPSG:4326", always_xy=True)
+    lon, lat = transformer.transform(x, y)
+    return float(lon), float(lat)
+
+
+def _approach_point(graph: Any, u: int, v: int, distance_ft: float) -> tuple[float, float, list[int], str, str]:
+    remaining_m = distance_ft * FT_TO_M
+    current = u
+    previous = v
+    path = [v, u]
+    while True:
+        candidates = [int(node) for node in graph.predecessors(current) if int(node) != int(previous)]
+        if not candidates:
+            lon, lat = _point_upstream(graph, u, v, distance_ft)
+            return lon, lat, path, "limited", "insufficient upstream graph path; projected from closure segment"
+        next_node = candidates[0]
+        a = _xy(graph, current)
+        b = _xy(graph, next_node)
+        segment_m = math.hypot(b[0] - a[0], b[1] - a[1])
+        if remaining_m <= segment_m:
+            x, y = _interpolate(a, b, remaining_m)
+            lon, lat = _lonlat_from_xy(graph, x, y)
+            return lon, lat, [*path, next_node], "placed", ""
+        remaining_m -= segment_m
+        previous = current
+        current = next_node
+        path.append(current)
+        if len(path) > 20:
+            lon, lat = _point_upstream(graph, u, v, distance_ft)
+            return lon, lat, path, "limited", "approach path search limit reached"
+
+
 def warning_sign_features(graph: Any, closures: list[tuple[int, int, dict[str, Any]]]) -> dict[str, Any]:
     features = []
     for closure_rank, (u, v, data) in enumerate(closures, start=1):
@@ -85,7 +133,7 @@ def warning_sign_features(graph: Any, closures: list[tuple[int, int, dict[str, A
         cumulative = 0.0
         for sequence in ("A", "B", "C"):
             cumulative += spacing[sequence]
-            lon, lat = _point_upstream(graph, u, v, cumulative)
+            lon, lat, approach_path, placement_status, placement_warning = _approach_point(graph, u, v, cumulative)
             features.append(
                 point_feature(
                     lon,
@@ -100,10 +148,13 @@ def warning_sign_features(graph: Any, closures: list[tuple[int, int, dict[str, A
                         "spacing_ft": spacing[sequence],
                         "distance_from_closure_ft": cumulative,
                         "mutcd_table": "MUTCD 11th Edition Revision 1 Table 6B-1",
+                        "mutcd_spacing_source": "Table 6B-1",
+                        "placement_status": placement_status,
+                        "placement_warning": placement_warning,
+                        "approach_path": approach_path,
                         "advisory": True,
                         "confidence": "draft",
                     },
                 )
             )
     return {"type": "FeatureCollection", "features": features}
-
