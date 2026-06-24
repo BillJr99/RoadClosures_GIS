@@ -565,9 +565,13 @@ that consumes those APIs.
 
 ## Git
 
-This workspace cannot use a normal `.git` directory because the platform
-provides a read-only placeholder. Git metadata is stored in `.repo.git`; use:
+The maintained application repository lives in `RoadManagement-GIS/` and uses a
+normal `.git` directory. From inside this directory, use standard Git commands:
 
 ```bash
-git --git-dir=.repo.git --work-tree=. status
+git status
 ```
+
+Original source/reference materials such as packet DOCX files, scanned PDFs,
+prototype notebooks, and early Python scripts are kept in the parent directory
+outside the repo.

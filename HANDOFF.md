@@ -17,20 +17,21 @@ The repository contains a functional MVP implementation:
 - Graph elevation enrichment tooling in `scripts/enrich_graph_elevation.sh`
 - Headed slow browser demonstration in `scripts/demo_browser.sh`
 - Full test runner in `scripts/test_all.sh`
-- Legacy prototype scripts and planning documents preserved at the repo root
+- Legacy prototype scripts and planning documents preserved in the parent
+  directory outside this repo
 
-Git metadata is stored in `.repo.git` because this environment provides a
-read-only `.git` placeholder. Use:
+The maintained repo now lives in `RoadManagement-GIS/` with normal Git metadata
+at `RoadManagement-GIS/.git`. From this directory, use standard Git commands:
 
 ```bash
-git --git-dir=.repo.git --work-tree=. status
-git --git-dir=.repo.git --work-tree=. log --oneline --decorate -10
+git status
+git log --oneline --decorate -10
 ```
 
 Latest known clean implementation commit:
 
 ```text
-a12c49a docs: add planner guide and synthetic cases
+4fda3b8 docs: update algorithm handoff
 ```
 
 ## Generated Data
