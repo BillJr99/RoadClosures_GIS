@@ -1,4 +1,4 @@
 scenario_id,name,lat,lon,incident_radius_ft,study_radius_ft,hose_max_ft,reviewer_notes,expected_hydrant_hint,expected_closure_hint,status,updated_at
-scenario-norristown-main,Main Street Norristown commercial block,40.11544,-75.34337,300,2500,600,Seed scenario for dense urban street grid and short hydrant runs,,Main St,active,2026-06-24T00:00:00Z
+scenario-norristown-main,Main Street Norristown commercial block,40.11544,-75.34337,300,2500,1500,Seed scenario for dense urban street grid and nearby OSM hydrants,,Main St,active,2026-06-24T00:00:00Z
 scenario-lansdale-main,Broad and Main Lansdale borough core,40.24156,-75.28374,300,2500,600,Seed scenario near NPWA hydrant coverage and mixed arterial/local streets,,W Main St,active,2026-06-24T00:00:00Z
-scenario-pottstown-high,High Street Pottstown downtown block,40.24555,-75.64963,300,2500,600,Seed scenario for western county coverage and longer road graph fetches,,High St,active,2026-06-24T00:00:00Z
+scenario-limerick-ridge,Ridge Pike Limerick hydrant coverage check,40.27899,-75.49390,300,2500,1000,Seed scenario near SBA hydrant coverage and arterial/local road mix,,Ridge Pike,active,2026-06-24T00:00:00Z

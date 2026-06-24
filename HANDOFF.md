@@ -11,6 +11,7 @@ The repository contains a functional MVP implementation:
 - GIS rebuild tooling in `scripts/rebuild_gis_data.sh`
 - Scenario validation tooling in `scripts/run_scenarios.sh` and
   `scripts/update_scenario_golden.sh`
+- Scenario-local graph build tooling in `scripts/build_scenario_graph.sh`
 - Full test runner in `scripts/test_all.sh`
 - Legacy prototype scripts and planning documents preserved at the repo root
 
@@ -73,6 +74,7 @@ This runs:
 Real incident scenario validation is opt-in:
 
 ```bash
+scripts/build_scenario_graph.sh
 RUN_SCENARIOS=1 scripts/test_all.sh
 ```
 
@@ -134,8 +136,9 @@ http://localhost:5173/
 ## Recommended Next Work
 
 1. Run and review the seeded real incident scenarios.
-   Use `scripts/run_scenarios.sh`, inspect `data/scenario_runs/<timestamp>/`,
-   then promote accepted summaries with `scripts/update_scenario_golden.sh`.
+   Use `scripts/build_scenario_graph.sh` first, then
+   `scripts/run_scenarios.sh`, inspect `data/scenario_runs/<timestamp>/`, and
+   promote accepted summaries with `scripts/update_scenario_golden.sh`.
 
 2. Improve routing graph strategy.
    Full county GraphML via Overpass is too slow. Prefer incident-local graph

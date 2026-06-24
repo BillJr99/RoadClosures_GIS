@@ -104,6 +104,13 @@ To include real scenario validation in the full suite:
 RUN_SCENARIOS=1 scripts/test_all.sh
 ```
 
+For live scenario validation, build a local GraphML artifact around the active
+scenario locations first:
+
+```bash
+scripts/build_scenario_graph.sh
+```
+
 ## Scenario Validation
 
 Incident scenarios are stored in `data/scenarios/incidents.csv`. They can be
@@ -118,6 +125,13 @@ Run one scenario:
 
 ```bash
 scripts/run_scenarios.sh --scenario-id scenario-example
+```
+
+Refresh the local scenario graph after adding or moving scenarios:
+
+```bash
+scripts/build_scenario_graph.sh
+scripts/build_scenario_graph.sh --scenario-id scenario-norristown-main
 ```
 
 Scenario outputs are written to `data/scenario_runs/<timestamp>/` and are
