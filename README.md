@@ -6,6 +6,48 @@ The project keeps the original course/prototype files at the repository root as
 legacy references. New implementation code lives under `backend/` and
 `frontend/`.
 
+## Quickstart
+
+Start the backend API:
+
+```bash
+cd backend
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8001
+```
+
+Open the backend API docs at:
+
+```text
+http://127.0.0.1:8001/docs
+```
+
+Start the frontend in a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the app at:
+
+```text
+http://localhost:5173/
+```
+
+Quick manual test flow:
+
+1. Confirm the backend is healthy at `http://127.0.0.1:8001/api/health`.
+2. Open `http://localhost:5173/` and confirm the map loads.
+3. Search for a Montgomery County address or click the map to set an incident.
+4. Run the incident planner and confirm hydrant, hose route, closure, and
+   warning sign results appear.
+5. Use the Scenarios panel to view seeded scenarios such as Norristown,
+   Lansdale, and Limerick.
+
 ## Development
 
 Backend:
