@@ -115,7 +115,55 @@ scripts/build_scenario_graph.sh
 
 Incident scenarios are stored in `data/scenarios/incidents.csv`. They can be
 edited by hand or through the app. The repo includes seeded active scenarios for
-Norristown, Lansdale, and Pottstown. Run all active scenarios:
+Norristown, Lansdale, and Limerick.
+
+### Scenario Authoring Guide
+
+A scenario is a repeatable incident example used to validate that the planner
+chooses reasonable hydrants, hose routes, and closure recommendations. Add
+scenarios from real debriefs, training examples, or expert-selected test
+locations.
+
+Each CSV row has these fields:
+
+- `scenario_id`: stable unique ID, such as `scenario-main-st-depot-fire`
+- `name`: short human-readable incident name
+- `lat`, `lon`: incident center in WGS84 decimal degrees
+- `incident_radius_ft`: radius of the scene to isolate
+- `study_radius_ft`: surrounding road network radius considered for closure
+- `hose_max_ft`: maximum allowed hydrant-to-incident hose route
+- `reviewer_notes`: field notes, assumptions, or debrief context
+- `expected_hydrant_hint`: optional human expectation for the hydrant choice
+- `expected_closure_hint`: optional human expectation for closure roads
+- `status`: `active` runs by default; `inactive` remains documented but skipped
+- `updated_at`: ISO timestamp for manual tracking
+
+Use the app when you want to create or revise a scenario visually:
+
+1. Start the backend and frontend.
+2. Search for an address or click the map to set the incident.
+3. In the Scenarios panel, enter a scenario name and distances.
+4. Add reviewer notes or expected hydrant/closure hints.
+5. Save the scenario.
+6. Rebuild the scenario graph before running live validation.
+
+Use the CSV when you are adding several known incidents at once:
+
+1. Edit `data/scenarios/incidents.csv`.
+2. Keep `scenario_id` stable once a scenario has a reviewed golden summary.
+3. Use `inactive` for examples that are useful documentation but should not run
+   in the default suite.
+4. Rebuild the scenario graph after adding, moving, or changing the radius of
+   active scenarios.
+
+Refresh the local scenario graph after adding or moving scenarios:
+
+```bash
+scripts/build_scenario_graph.sh
+scripts/build_scenario_graph.sh --scenario-id scenario-norristown-main
+```
+
+Run all active scenarios:
 
 ```bash
 scripts/run_scenarios.sh
@@ -127,13 +175,6 @@ Run one scenario:
 scripts/run_scenarios.sh --scenario-id scenario-example
 ```
 
-Refresh the local scenario graph after adding or moving scenarios:
-
-```bash
-scripts/build_scenario_graph.sh
-scripts/build_scenario_graph.sh --scenario-id scenario-norristown-main
-```
-
 Scenario outputs are written to `data/scenario_runs/<timestamp>/` and are
 ignored by git. To promote a reviewed run to golden summaries:
 
@@ -141,9 +182,92 @@ ignored by git. To promote a reviewed run to golden summaries:
 scripts/update_scenario_golden.sh data/scenario_runs/<timestamp>
 ```
 
+Promoting means copying the reviewed `summary.json` files from a scenario run
+into `data/scenario_golden/`. After promotion, future scenario runs compare
+their hydrant choice, closure count, and closure road names against those golden
+summaries. A changed golden comparison makes `scripts/run_scenarios.sh` exit
+nonzero so planner regressions are visible in the test suite.
+
 `scripts/run_scenarios.sh` exits nonzero if a scenario planner run fails or if a
 previously approved golden summary changes. Missing goldens are reported so the
 first reviewed run can be promoted.
+
+Recommended workflow for adding expert-reviewed scenarios:
+
+```bash
+# 1. Add or edit rows in data/scenarios/incidents.csv, or use the app.
+
+# 2. Rebuild the GraphML around the active scenario set.
+scripts/build_scenario_graph.sh
+
+# 3. Run live scenario validation.
+scripts/run_scenarios.sh
+
+# 4. Review the latest report and plan JSON files.
+#    Confirm selected_hydrant, hose_route, ranked_closures, and notes.
+
+# 5. Promote only after a human accepts the current results.
+scripts/update_scenario_golden.sh data/scenario_runs/<timestamp>
+
+# 6. Re-run to verify the promoted goldens now match.
+scripts/run_scenarios.sh
+
+# 7. Include live scenarios in the full suite when desired.
+RUN_SCENARIOS=1 scripts/test_all.sh
+```
+
+## Implementation Plan
+
+### Routing Graph Strategy
+
+The current full-county GraphML build is too slow through Overpass, while the
+scenario-local graph builder is practical for validation. The production path
+should move to cached incident-local or tiled GraphML artifacts:
+
+1. Add a graph cache keyed by rounded incident location, study radius, and
+   network type.
+2. Store cache metadata with bbox, source timestamp, node/edge counts, and
+   scenario coverage.
+3. Prefer cached graphs in the planner and fetch OSMnx only on cache miss.
+4. Add a tile prebuild command for operational areas that should work offline.
+5. Add tests that verify planner behavior is identical when using a fresh graph
+   and a cached graph.
+
+### County Road Attribute Reconciliation
+
+The displayed county road layer and OSMnx routing graph are currently separate.
+Reconciliation should transfer county `St_Name`, `FuncClass`, `Owner`, and
+related fields onto graph edges:
+
+1. Build a spatial index over Montgomery County road geometries.
+2. For each OSMnx edge, find nearby county segments by distance and bearing.
+3. Attach the best county match and confidence score to the graph edge.
+4. Use matched `FuncClass` and ownership to tune closure cost.
+5. Surface matched road names and confidence in planner outputs and reports.
+
+### Scenario Review UI
+
+Scenario runs are currently written to files. The frontend should support review
+without leaving the app:
+
+1. Add backend endpoints to list run directories, read run summaries, and read a
+   scenario plan output.
+2. Add a Scenario Runs panel with status, golden comparison, and report links.
+3. Render selected hydrant, hose distance, closure list, and golden differences.
+4. Add a guarded "promote run" action that calls the golden update workflow.
+5. Add Playwright coverage for reviewing a run and promoting accepted results.
+
+### MUTCD Advance-Warning Placement
+
+MUTCD support should be added after closure recommendations are validated:
+
+1. Start with a rule table for minor, intermediate, and major incidents.
+2. Derive advance-warning candidate points along inbound approaches to each
+   closure.
+3. Include road speed/class, sight distance, curvature, intersections, and
+   available shoulder/placement constraints where data exists.
+4. Render sign placement candidates as a separate map layer and planner output.
+5. Add scenario expectations for sign spacing and blocked/invalid placements.
 
 The backend serves API endpoints for GIS layer generation, manual hydrant
 editing, geocoding, and incident planning. The frontend is a React + Leaflet map

@@ -120,7 +120,7 @@ http://localhost:5173/
 - Scenario CSV CRUD and single-scenario run endpoints implemented in backend.
 - Scenario records can be created, edited, loaded, run, and deleted from the
   frontend.
-- Seeded active scenarios are present for Norristown, Lansdale, and Pottstown.
+- Seeded active scenarios are present for Norristown, Lansdale, and Limerick.
 - Scenario run reports are written under ignored `data/scenario_runs/`; reviewed
   summaries can be promoted to `data/scenario_golden/`.
 - Reconciled hydrant layer is regenerated from authoritative + manual sources.
@@ -139,6 +139,7 @@ http://localhost:5173/
    Use `scripts/build_scenario_graph.sh` first, then
    `scripts/run_scenarios.sh`, inspect `data/scenario_runs/<timestamp>/`, and
    promote accepted summaries with `scripts/update_scenario_golden.sh`.
+   The README documents the full scenario authoring and promotion workflow.
 
 2. Improve routing graph strategy.
    Full county GraphML via Overpass is too slow. Prefer incident-local graph
