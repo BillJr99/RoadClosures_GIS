@@ -209,7 +209,7 @@ export function MapView({
             data={displayDevices}
             pointToLayer={(feature, latlng) =>
               feature.properties?.kind === "barricade"
-                ? L.circleMarker(latlng, { radius: 7, color: "#9d174d", fillColor: "#db2777", fillOpacity: 0.95, weight: 2 })
+                ? L.circleMarker(latlng, { radius: 7, color: "#dc2626", fillColor: "#f87171", fillOpacity: 0.95, weight: 2 })
                 : L.circleMarker(latlng, { radius: 4, color: "#c2410c", fillColor: "#f97316", fillOpacity: 0.9, weight: 1 })
             }
             onEachFeature={(feature, layer) =>
@@ -221,7 +221,7 @@ export function MapView({
           <Pane name="incident-pane" style={{ zIndex: 750 }}>
             <CircleMarker
               center={[incident.lat, incident.lon]}
-              radius={8}
+              radius={11}
               pathOptions={{ bubblingMouseEvents: true, className: "incident-marker", color: "#b42318", fillColor: "#c83525", fillOpacity: 0.9, weight: 3 }}
               eventHandlers={{
                 click() {

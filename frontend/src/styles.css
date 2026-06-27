@@ -460,6 +460,8 @@ button.primary {
 }
 
 .legend-swatch.incident {
+  width: 18px;
+  height: 18px;
   background: #c83525;
 }
 
@@ -477,7 +479,7 @@ button.primary {
 }
 
 .legend-swatch.barricade {
-  background: #db2777;
+  background: #f87171;
 }
 
 .legend-swatch.device {
