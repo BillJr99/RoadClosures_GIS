@@ -13,6 +13,7 @@ SCENARIO_RUNS_DIR = DATA_ROOT / "scenario_runs"
 SCENARIO_GOLDEN_DIR = DATA_ROOT / "scenario_golden"
 SCENARIO_EXPERT_GOLDEN_DIR = SCENARIO_DIR / "goldens"
 GRAPH_CACHE_DIR = GENERATED_DIR / "graph_cache"
+GRAPH_TILES_DIR = GENERATED_DIR / "graph_tiles"
 PLAN_CACHE_DIR = GENERATED_DIR / "plan_cache"
 
 # Bump to invalidate cached plan results after a scoring/algorithm change.
@@ -87,6 +88,7 @@ def ensure_data_dirs() -> None:
     MANUAL_DIR.mkdir(parents=True, exist_ok=True)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     GRAPH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    GRAPH_TILES_DIR.mkdir(parents=True, exist_ok=True)
     PLAN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_RUNS_DIR.mkdir(parents=True, exist_ok=True)

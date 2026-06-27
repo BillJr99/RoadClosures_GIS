@@ -655,17 +655,42 @@ shell, sidebar panels, and state).
 
 ### Routing Graph Strategy
 
-The planner uses a cached incident-local graph strategy. If
-`data/generated/road_graph.graphml` exists, the planner uses that explicit graph.
-Otherwise it creates or reuses a graph cache entry under
-`data/generated/graph_cache/`, keyed by rounded incident location, study radius,
-network type, and cache version.
+The planner resolves a routing graph in this order:
+
+1. **Configured GraphML** — `data/generated/road_graph.graphml`, when present and
+   it covers the incident.
+2. **Operational-area tile** — a prebuilt larger graph that fully contains the
+   incident's study area (see below). This enables offline planning across a
+   whole response area.
+3. **Incident-local cache** — a graph cache entry under
+   `data/generated/graph_cache/`, keyed by rounded incident location, study
+   radius, network type, and cache version (fetched from OSM on first use).
 
 Use this to prebuild active scenario cache entries:
 
 ```bash
 scripts/build_graph_cache.sh
 scripts/build_graph_cache.sh --scenario-id scenario-norristown-main
+```
+
+### Operational-Area Tiles (offline planning)
+
+A tile is a larger road graph (e.g. a municipality or response district) saved
+once to GraphML under `data/generated/graph_tiles/`, with an `index.json` listing
+each tile's center and radius. When an incident's study disc fits entirely inside
+a tile (`distance(center, incident) + study_radius <= tile.radius`), the planner
+loads the tile instead of fetching a fresh incident-local graph — so after a
+one-time prebuild the whole area can be planned with no network. The tightest
+covering tile is chosen for speed. See `backend/app/services/graph_tiles.py`.
+
+Prebuild tiles (requires network at build time only):
+
+```bash
+# One tile per active scenario, 8000 ft radius (default)
+scripts/build_operational_tiles.sh
+# Explicit centers / radius
+scripts/build_operational_tiles.sh --center 40.115,-75.343 --radius-ft 10000
+scripts/build_operational_tiles.sh --scenario-id scenario-norristown-main
 ```
 
 Enrich graph elevation:

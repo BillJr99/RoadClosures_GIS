@@ -81,6 +81,13 @@ def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, A
                 "radius_m": graph_radius_m(req),
                 "incident_snap_ft": round(snap_m * M_TO_FT, 1),
             }
+        tile_result = _load_operational_tile(req)
+        if tile_result is not None:
+            graph, metadata = tile_result
+            metadata["fallback_reason"] = (
+                f"configured GraphML nearest node was {round(snap_m * M_TO_FT, 1)} ft from incident"
+            )
+            return graph, metadata
         try:
             graph, metadata = load_or_fetch_graph(req)
             graph = enrich_graph_with_county_roads(graph)
@@ -94,9 +101,36 @@ def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, A
                 f"(nearest graph node is {round(snap_m * M_TO_FT, 1)} ft away), "
                 "and a local incident graph could not be loaded or fetched. Rebuild layers/graph for this area."
             ) from e
+    # No single configured artifact: prefer a prebuilt operational-area tile
+    # (offline) before fetching a fresh incident-local graph.
+    tile_result = _load_operational_tile(req)
+    if tile_result is not None:
+        return tile_result
     graph, metadata = load_or_fetch_graph(req)
     graph = enrich_graph_with_county_roads(graph)
     return graph, metadata
+
+
+def _load_operational_tile(req: IncidentPlanRequest) -> tuple[Any, dict[str, Any]] | None:
+    from app.services.graph_tiles import find_covering_tile, load_tile_graph, load_tiles
+
+    tiles = load_tiles()
+    if not tiles:
+        return None
+    study_radius_m = req.study_radius_ft * FT_TO_M
+    tile = find_covering_tile(tiles, req.lat, req.lon, study_radius_m)
+    if tile is None:
+        return None
+    graph = load_tile_graph(tile)
+    graph = enrich_graph_with_county_roads(graph)
+    return graph, {
+        "cache_hit": True,
+        "cache_key": tile.tile_id,
+        "graph_path": tile.graph_file,
+        "source": "prebuilt operational-area tile",
+        "tile_id": tile.tile_id,
+        "radius_m": tile.radius_m,
+    }
 
 
 def _transformer_to_graph(graph: Any):
