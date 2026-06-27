@@ -340,6 +340,10 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await expect(page.locator(".config-applied")).toContainText("hose 650 ft");
   await expect(page.locator(".config-applied")).toContainText("study 1800 ft");
   await expect(page.locator(".config-applied")).toContainText("sign 900 ft");
+  // The resource-availability inventory steppers live inside the Configuration
+  // pulldown (not the Plan Review panel).
+  await expect(page.locator(".config-panel").getByText("Resource availability")).toBeVisible();
+  await expect(page.getByLabel("Barricades available")).toBeVisible();
 
   await page.getByPlaceholder("Scenario name").fill("Test Scenario");
   await page.getByLabel("Reviewer note: expected hydrant").fill("blue hydrant");

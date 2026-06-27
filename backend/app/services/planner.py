@@ -682,7 +682,9 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         raise ValueError(
             f"No reachable hydrants found within {req.hose_max_ft:g} ft hose envelope. "
             f"Checked {filter_details.get('total_features', 0)} hydrant feature(s); "
-            f"{filter_details.get('accepted', 0)} passed distance, snap, and route checks."
+            f"{filter_details.get('accepted', 0)} passed distance, snap, and route checks. "
+            f"Increase the hose envelope (Configuration → hose envelope feet) or move the "
+            f"incident closer to a hydrant."
         )
 
     selected_hydrants = candidates[: req.hydrant_count]

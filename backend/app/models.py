@@ -22,7 +22,7 @@ class IncidentPlanRequest(BaseModel):
     lon: float = Field(ge=-180, le=180)
     incident_radius_ft: float = Field(default=300.0, gt=0)
     study_radius_ft: float = Field(default=2500.0, gt=0)
-    hose_max_ft: float = Field(default=500.0, gt=0)
+    hose_max_ft: float = Field(default=1500.0, gt=0)
     incident_class: str = "minor"
     hydrant_count: int = Field(default=1, ge=1, le=4)
     secondary_incidents: list["IncidentPoint"] = Field(default_factory=list)

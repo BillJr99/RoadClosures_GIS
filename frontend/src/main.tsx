@@ -172,22 +172,25 @@ function App() {
   const [goldenDraft, setGoldenDraft] = useState<GoldenDraft>(emptyGoldenDraft());
   const [hydrantCount, setHydrantCount] = useState(1);
   const [plannerConfig, setPlannerConfig] = useState({
-    hose_max_ft: "500",
+    hose_max_ft: "1500",
     study_radius_ft: "2500",
     sign_max_distance_ft: "1500",
   });
   const [plannerConfigDraft, setPlannerConfigDraft] = useState({
-    hose_max_ft: "500",
+    hose_max_ft: "1500",
     study_radius_ft: "2500",
     sign_max_distance_ft: "1500",
   });
-  // How many of each resource TYPE the user has available. The map only draws
-  // the top-N highest-priority features of each type; the rest are hidden.
+  // How many of each resource TYPE the user has available, treated as a sticky
+  // inventory. The map only draws the top-N highest-priority features of each
+  // type; the rest are hidden. Once the user adjusts a stepper, `touched` stays
+  // true so subsequent plans never wipe their specified availability.
   const [resourceCounts, setResourceCounts] = useState<ResourceCounts>({
     barricades: 0,
     channelizing: 0,
     signs: 0,
   });
+  const [resourceCountsTouched, setResourceCountsTouched] = useState(false);
 
   async function loadLayers(forceRefresh = false) {
     setLoadToast("Loading GIS data in the background...");
@@ -778,8 +781,12 @@ function App() {
   // default; the user then dials counts down to hide lower-priority extras.
   const planResourceTotals = useMemo(() => resourceTotals(plan), [plan]);
   useEffect(() => {
-    setResourceCounts(planResourceTotals);
-  }, [planResourceTotals]);
+    // Initialize the inventory to the plan's totals only until the user has
+    // adjusted a stepper. After that, their counts persist across plans.
+    if (!resourceCountsTouched) {
+      setResourceCounts(planResourceTotals);
+    }
+  }, [planResourceTotals, resourceCountsTouched]);
 
   const filteredPlanResources = useMemo(
     () => filterPlanResources(plan, resourceCounts),
@@ -891,6 +898,7 @@ function App() {
   const setResourceCount = (type: ResourceType, next: number) => {
     const total = planResourceTotals[type];
     const clamped = Math.max(0, Math.min(total, Math.round(next)));
+    setResourceCountsTouched(true);
     setResourceCounts((counts) => ({ ...counts, [type]: clamped }));
   };
 
@@ -988,7 +996,7 @@ function App() {
                 <input
                   value={plannerConfigDraft.hose_max_ft}
                   onChange={(e) => setPlannerConfigDraft({ ...plannerConfigDraft, hose_max_ft: e.target.value })}
-                  placeholder="500"
+                  placeholder="1500"
                 />
               </label>
               <label className="field">
@@ -1009,6 +1017,15 @@ function App() {
               </label>
               <div className="config-applied" role="status">
                 Auto-applied: hose {plannerConfig.hose_max_ft} ft · study {plannerConfig.study_radius_ft} ft · sign {plannerConfig.sign_max_distance_ft} ft
+              </div>
+              <div className="subsection resource-availability">
+                <h3><SlidersHorizontal size={16} /> Resource availability</h3>
+                <span className="resource-help">
+                  Set how many of each resource you have. Lower the count to hide the lowest-priority units; the map updates live.
+                </span>
+                {renderResourceControl("barricades", "Barricades")}
+                {renderResourceControl("channelizing", "Channelizing devices")}
+                {renderResourceControl("signs", "Signs")}
               </div>
             </div>
           )}
@@ -1334,15 +1351,6 @@ function App() {
                 <span>{planMeaning.nextStep}</span>
               </div>
             )}
-            <div className="subsection resource-availability">
-              <h3><SlidersHorizontal size={16} /> Resource availability</h3>
-              <span className="resource-help">
-                Set how many of each resource you have. Lower the count to hide the lowest-priority units; the map updates live.
-              </span>
-              {renderResourceControl("barricades", "Barricades")}
-              {renderResourceControl("channelizing", "Channelizing devices")}
-              {renderResourceControl("signs", "Signs")}
-            </div>
             <div className="inline">
               <button onClick={addHydrantAndRerun} disabled={!incident || isPlanning || hydrantCount >= 4}>
                 <Droplets size={18} /> Add Hydrant
