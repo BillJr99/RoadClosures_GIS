@@ -1,7 +1,15 @@
 import math
 
 from app.config import SCORING_WEIGHTS
-from app.services.planner import _hydrant_score, _sightline_penalty
+from app.services.planner import _hydrant_score, _sightline_penalty, _within_radius_indices
+
+
+def test_within_radius_indices_matches_linear_scan() -> None:
+    xs = [0.0, 10.0, 100.0, 3.0]
+    ys = [0.0, 0.0, 0.0, 4.0]
+    # Points within 6 units of the origin: index 0 (0,0) and index 3 (3,4 -> dist 5).
+    assert _within_radius_indices(xs, ys, 0.0, 0.0, 6.0) == [0, 3]
+    assert _within_radius_indices([], [], 0.0, 0.0, 6.0) == []
 
 
 def test_hydrant_score_breakdown_sums_to_score_and_is_normalized() -> None:

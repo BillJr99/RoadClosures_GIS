@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
+from networkx.algorithms.flow import preflow_push
 
 from app.config import (
     PERIMETER_FRACTION,
@@ -16,6 +17,7 @@ from app.geojson import line_feature, point_feature, read_geojson
 from app.models import IncidentPlanRequest
 from app.services.elevation import path_max_grade
 from app.services.graph_cache import graph_radius_m, load_or_fetch_graph
+from app.services.plan_cache import graph_fingerprint, load_cached_plan, plan_cache_key, save_cached_plan
 from app.services.road_matching import enrich_graph_with_county_roads
 from app.services.warning_signs import coverage_summary, device_features, warning_sign_features
 
@@ -138,6 +140,23 @@ def _nearest_node(graph: Any, lon: float, lat: float) -> int:
     return int(ox.nearest_nodes(graph, X=x, Y=y))
 
 
+def _nearest_nodes_xy(graph: Any, xs: list[float], ys: list[float]) -> list[int]:
+    """Nearest graph node for each (x, y) in graph coordinates, in one call.
+
+    Batching the snap across all surviving hydrants is far cheaper than one
+    ``nearest_nodes`` call per hydrant.
+    """
+    if not xs:
+        return []
+    import osmnx as ox
+
+    result = ox.nearest_nodes(graph, X=xs, Y=ys)
+    try:
+        return [int(n) for n in result]
+    except TypeError:  # single scalar when only one point was requested
+        return [int(result)]
+
+
 def _node_distance_m(graph: Any, node: int, x: float, y: float) -> float:
     data = graph.nodes[node]
     return math.hypot(float(data["x"]) - x, float(data["y"]) - y)
@@ -237,6 +256,26 @@ def _hydrant_score(
     return sum(breakdown.values()), breakdown
 
 
+def _within_radius_indices(
+    xs: list[float], ys: list[float], cx: float, cy: float, radius: float
+) -> list[int]:
+    """Indices of points within ``radius`` of (cx, cy).
+
+    Uses a KD-tree when SciPy is available (O(log n) spatial cull over the full
+    hydrant set) and falls back to a linear scan otherwise. Behavior is
+    identical either way; only the speed differs.
+    """
+    if not xs:
+        return []
+    try:
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(list(zip(xs, ys)))
+        return sorted(int(i) for i in tree.query_ball_point([cx, cy], radius))
+    except Exception:
+        return [i for i in range(len(xs)) if math.hypot(xs[i] - cx, ys[i] - cy) <= radius]
+
+
 def _hydrant_features() -> list[dict[str, Any]]:
     return read_geojson(RECONCILED_HYDRANTS_GEOJSON)["features"]
 
@@ -259,24 +298,44 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
             "rejected_no_path": 0,
             "rejected_non_point": 0,
         }
-    candidates: list[HydrantCandidate] = []
-    for feature in _hydrant_features():
-        if debug is not None:
-            debug["hydrant_filter"]["total_features"] += 1
+    # Project every hydrant once (batched), then spatially cull to the ones
+    # near the incident before doing any expensive snapping/routing work.
+    features = _hydrant_features()
+    transformer = _transformer_to_graph(graph)
+    lons: list[float] = []
+    lats: list[float] = []
+    kept: list[dict[str, Any]] = []
+    non_point = 0
+    for feature in features:
         lonlat = _feature_lonlat(feature)
         if lonlat is None:
-            if debug is not None:
-                debug["hydrant_filter"]["rejected_non_point"] += 1
+            non_point += 1
             continue
-        lon, lat = lonlat
-        hydrant_x, hydrant_y = _lonlat_xy(graph, lon, lat)
+        lons.append(lonlat[0])
+        lats.append(lonlat[1])
+        kept.append(feature)
+    if lons:
+        xs_arr, ys_arr = transformer.transform(lons, lats)
+        xs = [float(v) for v in xs_arr]
+        ys = [float(v) for v in ys_arr]
+    else:
+        xs, ys = [], []
+    within = _within_radius_indices(xs, ys, incident_x, incident_y, max_m * 1.35)
+    if debug is not None:
+        debug["hydrant_filter"]["total_features"] = len(features)
+        debug["hydrant_filter"]["rejected_non_point"] = non_point
+        debug["hydrant_filter"]["rejected_direct_distance"] = len(kept) - len(within)
+
+    survivor_xs = [xs[i] for i in within]
+    survivor_ys = [ys[i] for i in within]
+    survivor_nodes = _nearest_nodes_xy(graph, survivor_xs, survivor_ys)
+
+    candidates: list[HydrantCandidate] = []
+    for idx, hydrant_node in zip(within, survivor_nodes):
+        feature = kept[idx]
+        hydrant_x, hydrant_y = xs[idx], ys[idx]
         direct_distance_m = math.hypot(hydrant_x - incident_x, hydrant_y - incident_y)
-        if direct_distance_m > max_m * 1.35:
-            if debug is not None:
-                debug["hydrant_filter"]["rejected_direct_distance"] += 1
-            continue
         try:
-            hydrant_node = _nearest_node(graph, lon, lat)
             hydrant_snap_m = _node_distance_m(graph, hydrant_node, hydrant_x, hydrant_y)
             if hydrant_snap_m > max_snap_m or incident_snap_m > max_snap_m:
                 if debug is not None:
@@ -468,6 +527,15 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     }
     graph, graph_source = _load_graph_for_incident(req)
     debug["graph_source"] = graph_source
+
+    # Plan-result cache: same incident + parameters over the same graph returns
+    # the identical result instantly, skipping the hydrant scan and min-cut.
+    cache_key = plan_cache_key(req.model_dump(), graph_fingerprint(graph))
+    cached = load_cached_plan(cache_key)
+    if cached is not None:
+        cached["graph_source"] = {**(cached.get("graph_source") or {}), "plan_cache_hit": True}
+        return cached
+
     x, y = _incident_xy(graph, req)
     fire_node = _nearest_node(graph, req.lon, req.lat)
     debug["incident"] = {
@@ -516,7 +584,12 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     external_nodes = _perimeter_nodes(graph, x, y, req.study_radius_ft * FT_TO_M * PERIMETER_FRACTION)
 
     flow = _build_flow_graph(graph, incident_nodes, external_nodes, hose_edges)
-    cut_value, partition = nx.minimum_cut(flow, SUPER_SOURCE, SUPER_SINK, capacity="capacity")
+    # preflow_push is typically much faster than the default edmonds_karp on
+    # road-sized graphs; the min-cut value is unique and float capacities make
+    # tied partitions vanishingly rare.
+    cut_value, partition = nx.minimum_cut(
+        flow, SUPER_SOURCE, SUPER_SINK, capacity="capacity", flow_func=preflow_push
+    )
     reachable, non_reachable = partition
     # If the cheapest cut still has near-infinite cost, no finite set of
     # closures can isolate the incident without cutting the protected hose
@@ -588,7 +661,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     debug["closure_count"] = len(closure_features)
     debug["warning_sign_count"] = len(warning_signs["features"])
 
-    return {
+    result = {
         "cut_value": round(float(cut_value), 3),
         "feasible": feasible,
         "feasibility_note": feasibility_note,
@@ -632,3 +705,5 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         ],
         "_debug": debug,
     }
+    save_cached_plan(cache_key, result)
+    return result

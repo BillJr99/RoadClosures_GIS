@@ -597,6 +597,35 @@ combined label such as `P1A`/`P1B`/`P1C` (priority + MUTCD sequence). The
 frontend shows these as badges in the closure and sign lists and in map
 tooltips, and they are intended to carry through to field deployment exports.
 
+### Performance
+
+- **Hydrant pre-filter**: hydrants are projected once (batched) and culled with a
+  SciPy KD-tree (`_within_radius_indices`) before any routing work, and the
+  survivors are snapped to graph nodes in a single batched `nearest_nodes` call
+  (`_nearest_nodes_xy`) instead of one call per hydrant.
+- **Min-cut**: the closure cut uses the `preflow_push` flow function, which is
+  typically much faster than the default on road-sized graphs (the min-cut value
+  is unique, so results are unchanged).
+- **Plan-result cache**: identical incident + parameters over the same graph
+  return a cached result instantly (`backend/app/services/plan_cache.py`, stored
+  under `data/generated/plan_cache/`, versioned by `PLAN_CACHE_VERSION`). Cached
+  responses are flagged with `graph_source.plan_cache_hit`.
+- **Map rendering**: the map uses Leaflet canvas rendering (`preferCanvas`) and
+  only draws the county-wide road layer at zoom ≥ 11 (`ZoomGate`).
+
+### Background Jobs
+
+Long operations run as background jobs so the UI stays responsive:
+
+- `POST /api/jobs/build?include_graph=true` starts a layer rebuild and returns
+  `{ job_id }`.
+- `GET /api/jobs/{job_id}` returns `{ status: pending|running|done|error, result,
+  error }`.
+
+The frontend submits the build job and polls until completion, showing a
+"Building…" state. Jobs are in-memory and process-local
+(`backend/app/services/jobs.py`).
+
 ## Current Implementation Details
 
 ### Routing Graph Strategy

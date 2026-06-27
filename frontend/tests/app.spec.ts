@@ -248,9 +248,12 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
       json: [{ label: "123 Main St, Montgomery County", lat: 40.215, lon: -75.305 }],
     });
   });
-  await page.route("**/api/layers/build?include_graph=true", async (route) => {
+  await page.route("**/api/jobs/build?include_graph=true", async (route) => {
     buildCalled = true;
-    await route.fulfill({ json: { roads: { roads: 1 }, hydrants: { reconciled: 1 } } });
+    await route.fulfill({ json: { job_id: "build-job-1", status: "pending" } });
+  });
+  await page.route("**/api/jobs/build-job-1", async (route) => {
+    await route.fulfill({ json: { job_id: "build-job-1", status: "done", result: { roads: { roads: 1 }, hydrants: { reconciled: 1 } }, error: null } });
   });
   await page.route("**/api/plan", async (route) => {
     planCalled = true;

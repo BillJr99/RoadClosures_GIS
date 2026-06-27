@@ -324,6 +324,16 @@ function IncidentFocus({ incident }: { incident: Incident | null }) {
   return null;
 }
 
+// Renders children only at or above `minZoom`. Used to skip drawing the large
+// county-wide road layer when zoomed far out, where it is expensive and not
+// useful.
+function ZoomGate({ minZoom, children }: { minZoom: number; children: React.ReactNode }) {
+  const map = useMap();
+  const [zoom, setZoom] = useState(() => map.getZoom());
+  useMapEvents({ zoomend: () => setZoom(map.getZoom()) });
+  return zoom >= minZoom ? <>{children}</> : null;
+}
+
 function App() {
   const [roads, setRoads] = useState<FeatureCollection | null>(null);
   const [hydrants, setHydrants] = useState<FeatureCollection | null>(null);
@@ -339,6 +349,7 @@ function App() {
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [planVersion, setPlanVersion] = useState(0);
   const [isPlanning, setIsPlanning] = useState(false);
+  const [buildBusy, setBuildBusy] = useState(false);
   const [pendingIncidentRemove, setPendingIncidentRemove] = useState(false);
   const [scenarioRun, setScenarioRun] = useState<ScenarioRunResult | null>(null);
   const [scenarioRuns, setScenarioRuns] = useState<ScenarioRunListItem[]>([]);
@@ -461,10 +472,36 @@ function App() {
     }
   }
 
+  async function pollJob(jobId: string): Promise<Record<string, unknown>> {
+    for (;;) {
+      const job = await jsonFetch<Record<string, unknown>>(`${API}/jobs/${jobId}`);
+      if (job.status === "done") return job;
+      if (job.status === "error") throw new Error(String(job.error || "Job failed"));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
   async function buildLayers() {
+    if (buildBusy) return;
+    setBuildBusy(true);
     setMessage("Building GIS layers. This can take a while for full Montgomery County.");
-    await jsonFetch(`${API}/layers/build?include_graph=true`, { method: "POST" });
-    await loadLayers();
+    setLoadToast("Building GIS layers…");
+    try {
+      const { job_id: jobId } = await jsonFetch<{ job_id: string }>(
+        `${API}/jobs/build?include_graph=true`,
+        { method: "POST" },
+      );
+      await pollJob(jobId);
+      await loadLayers();
+      setMessage("GIS layers rebuilt.");
+      setLoadToast("GIS layers rebuilt.");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setMessage(`Build failed: ${detail}`);
+      setLoadToast(`Build failed: ${detail}`);
+    } finally {
+      setBuildBusy(false);
+    }
   }
 
   async function geocodeAddress() {
@@ -1360,7 +1397,9 @@ function App() {
         <section className="panel">
           <h2><Route size={18} /> Layers</h2>
           <button onClick={loadLayers}>Reload Layers</button>
-          <button onClick={buildLayers}>Build From Sources</button>
+          <button onClick={buildLayers} disabled={buildBusy}>
+            {buildBusy ? "Building…" : "Build From Sources"}
+          </button>
         </section>
 
         {plan && (
@@ -1461,7 +1500,7 @@ function App() {
 
       <section className="map-panel">
         {loadToast && <div className="toast">{loadToast}</div>}
-        <MapContainer center={CENTER} zoom={12} className="map">
+        <MapContainer center={CENTER} zoom={12} className="map" preferCanvas>
           <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
           <IncidentClick
             incident={incident}
@@ -1475,11 +1514,13 @@ function App() {
           <IncidentFocus incident={incident} />
           <PlanFocus plan={plan} version={planVersion} />
           {roads && (
-            <GeoJSON
-              data={roads}
-              style={{ color: "#74808c", weight: 1, opacity: 0.6 }}
-              onEachFeature={(feature, layer) => layer.bindTooltip(`Road: ${featureTooltip(feature, "road")}`)}
-            />
+            <ZoomGate minZoom={11}>
+              <GeoJSON
+                data={roads}
+                style={{ color: "#74808c", weight: 1, opacity: 0.6 }}
+                onEachFeature={(feature, layer) => layer.bindTooltip(`Road: ${featureTooltip(feature, "road")}`)}
+              />
+            </ZoomGate>
           )}
           {hydrants && (
             <GeoJSON
