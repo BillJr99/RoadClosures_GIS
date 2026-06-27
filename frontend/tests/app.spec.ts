@@ -316,8 +316,25 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
     });
   });
 
+  // Capture window.open calls so we can assert the "View report" button opens
+  // the run's report.html in a new window.
+  await page.addInitScript(() => {
+    (window as unknown as { __opened: string[] }).__opened = [];
+    window.open = ((url?: string | URL) => {
+      (window as unknown as { __opened: string[] }).__opened.push(String(url ?? ""));
+      return null;
+    }) as typeof window.open;
+  });
+
   await page.goto("/");
   await expect(page.locator("header p").filter({ hasText: /roads, 1 hydrants/i })).toBeVisible();
+  // Layers panel buttons are renamed and all present.
+  await expect(page.getByRole("button", { name: "Refresh Layers" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Update Cache" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rebuild GIS Data" })).toBeVisible();
+  // Scenarios and Scenario Runs panels start collapsed (like Configuration);
+  // expand the Scenarios pulldown before interacting with its contents.
+  await page.getByRole("button", { name: "Scenarios", exact: true }).click();
   const inactiveRow = page.locator(".scenario-row").filter({ hasText: "Inactive Scenario" });
   await expect(inactiveRow).toHaveCount(0);
   await page.getByRole("button", { name: /Inactive Scenarios/i }).click();
@@ -344,6 +361,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   // pulldown (not the Plan Review panel).
   await expect(page.locator(".config-panel").getByText("Resource availability")).toBeVisible();
   await expect(page.getByLabel("Barricades available")).toBeVisible();
+  await expect(page.getByLabel("Road closures available")).toBeVisible();
 
   await page.getByPlaceholder("Scenario name").fill("Test Scenario");
   await page.getByLabel("Reviewer note: expected hydrant").fill("blue hydrant");
@@ -383,16 +401,30 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByRole("button", { name: /Show on map/i }).first().click();
   await expect(page.getByText(/MUTCD advisory signs/i)).toBeVisible();
   await expect(page.getByText(/Hose 300 ft/i)).toBeVisible();
+  // Expand the Scenario Runs pulldown to reach the run history and promote controls.
+  await page.getByRole("button", { name: "Scenario Runs", exact: true }).click();
   await page.getByTitle("Promote run").click();
   await page.getByTitle("Promote run").click();
   await expect(page.getByText(/Promoted 1 scenario summaries/i)).toBeVisible();
   expect(promoteCalled).toBe(true);
+
+  // "View report" opens the run's report.html in a new window.
+  const viewReport = page.getByRole("button", { name: /View report/i }).first();
+  await expect(viewReport).toBeVisible();
+  await viewReport.click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => (window as unknown as { __opened: string[] }).__opened.some((u) => /\/scenario-runs\/20260624T120000Z\/report$/.test(u))),
+    )
+    .toBe(true);
 
   await editedRow.getByTitle("Delete scenario").click();
   await expect(page.getByText(/Click delete again to confirm scenario removal/i)).toBeVisible();
   await editedRow.getByTitle("Delete scenario").click();
   await expect(page.locator("section").filter({ hasText: "Scenarios" }).locator(".scenario-row").filter({ hasText: "Edited Scenario" })).toHaveCount(0);
 
+  // Manual hydrants panel is a collapsed pulldown by default; expand it first.
+  await page.getByRole("button", { name: "Add Manual Hydrants", exact: true }).click();
   await page.getByLabel("Name", { exact: true }).fill("Known Hydrant");
   await page.getByTitle("Pick manual hydrant location on map").click();
   await expect(page.locator(".toast").filter({ hasText: /Click the map to fill manual hydrant/i })).toBeVisible();
@@ -408,7 +440,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByTitle("Remove").click();
   await expect(page.getByText("Renamed Hydrant")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Build From Sources" }).click();
+  await page.getByRole("button", { name: "Rebuild GIS Data" }).click();
   expect(buildCalled).toBe(true);
 
   await page.getByRole("button", { name: /Recommend Closures/i }).click();
@@ -440,6 +472,23 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   // Wait for the re-run to fully settle (button re-enables when planning ends)
   // so its late response can't overwrite the removal message below.
   await expect(page.getByRole("button", { name: /Add Hydrant/i })).toBeEnabled();
+
+  // Selected hydrant uses a styled ring, not the default Leaflet marker PNG, so
+  // there must be no (broken) marker-icon image on the map.
+  await expect(page.locator("img.leaflet-marker-icon")).toHaveCount(0);
+
+  // Secondary incident: placing one auto-replans across all incidents (the plan
+  // request carries secondary_incidents) and adds a second RED numbered marker.
+  await page.getByRole("button", { name: /Add Secondary Incident/i }).click();
+  await page.locator(".map").click({ position: { x: 120, y: 520 } });
+  await expect
+    .poll(() => (lastPlanBody?.secondary_incidents as unknown[] | undefined)?.length ?? 0)
+    .toBe(1);
+  await expect(page.locator(".leaflet-tooltip.incident-number").filter({ hasText: "2" })).toBeVisible();
+  await expect(page.locator(".leaflet-tooltip.incident-number").filter({ hasText: "1" })).toBeVisible();
+  // Let the auto-replan fully settle so its late response can't overwrite the
+  // removal message asserted below.
+  await expect(page.getByRole("button", { name: /Add Secondary Incident/i })).toBeEnabled();
 
   await page.getByRole("button", { name: /Clear Incident/i }).click();
   await expect(page.getByText(/Remove this incident and clear recommendations/i)).toBeVisible();

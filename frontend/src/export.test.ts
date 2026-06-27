@@ -58,6 +58,19 @@ describe("printableReportHtml", () => {
     expect(html).toContain("Second St");
   });
 
+  it("embeds an OSM incident map (Leaflet + tiles) when an incident is given", () => {
+    const html = printableReportHtml(plan, { lat: 40.1, lon: -75.3 });
+    expect(html).toContain("leaflet@1.9.4");
+    expect(html).toContain('id="report-map"');
+    expect(html).toContain("tile.openstreetmap.org");
+    // Static-image fallback for JS-disabled prints.
+    expect(html).toContain("staticmap.openstreetmap.de");
+  });
+
+  it("omits the map when there is no incident and no plottable geometry", () => {
+    expect(printableReportHtml(plan, null)).not.toContain('id="report-map"');
+  });
+
   it("shows a warning when the plan is infeasible", () => {
     const infeasible = { ...plan, feasible: false, feasibility_note: "no cut" } as PlanResponse;
     expect(printableReportHtml(infeasible, null)).toContain("no cut");
