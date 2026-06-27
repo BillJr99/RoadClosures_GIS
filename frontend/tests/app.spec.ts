@@ -334,8 +334,12 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByLabel("Hose envelope feet").fill("650");
   await page.getByLabel("Study radius feet").fill("1800");
   await page.getByLabel("Maximum sign distance feet").fill("900");
-  await page.getByTitle("Save configuration").click();
-  await expect(page.locator(".toast").filter({ hasText: /Configuration saved/i })).toBeVisible();
+  // No "Save Configuration" button anymore: the config auto-applies after a
+  // short debounce. The applied indicator reflects the committed values.
+  await expect(page.getByRole("button", { name: /Save Configuration/i })).toHaveCount(0);
+  await expect(page.locator(".config-applied")).toContainText("hose 650 ft");
+  await expect(page.locator(".config-applied")).toContainText("study 1800 ft");
+  await expect(page.locator(".config-applied")).toContainText("sign 900 ft");
 
   await page.getByPlaceholder("Scenario name").fill("Test Scenario");
   await page.getByLabel("Reviewer note: expected hydrant").fill("blue hydrant");

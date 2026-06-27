@@ -110,6 +110,8 @@ export type MapViewProps = {
   plan: PlanResponse | null;
   planVersion: number;
   displayPlanLayers: PlanLayers | null;
+  displaySigns: GeoJSON.FeatureCollection | null;
+  displayDevices: GeoJSON.FeatureCollection | null;
   selectedHydrantFeatures: GeoJSON.Feature[];
   loadToast: string | null;
   onPick: (incident: Incident) => void;
@@ -128,6 +130,8 @@ export function MapView({
   plan,
   planVersion,
   displayPlanLayers,
+  displaySigns,
+  displayDevices,
   selectedHydrantFeatures,
   loadToast,
   onPick,
@@ -191,18 +195,18 @@ export function MapView({
             onEachFeature={(feature, layer) => layer.bindTooltip(`Closure: ${featureTooltip(feature, "road segment")}`)}
           />
         ) : null}
-        {plan?.warning_signs && (
+        {displaySigns && (
           <GeoJSON
-            key={`warning-signs-${planVersion}`}
-            data={plan.warning_signs}
+            key={`warning-signs-${planVersion}-${displaySigns.features.length}`}
+            data={displaySigns}
             pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 7, color: "#7c3aed", fillColor: "#a855f7", fillOpacity: 0.9, weight: 2 })}
             onEachFeature={(feature, layer) => layer.bindTooltip(`Advisory sign ${String(feature.properties?.mutcd_sign_code ?? "")}: ${featureTooltip(feature, "sign")}`)}
           />
         )}
-        {plan?.devices && (
+        {displayDevices && (
           <GeoJSON
-            key={`devices-${planVersion}`}
-            data={plan.devices}
+            key={`devices-${planVersion}-${displayDevices.features.length}`}
+            data={displayDevices}
             pointToLayer={(feature, latlng) =>
               feature.properties?.kind === "barricade"
                 ? L.circleMarker(latlng, { radius: 7, color: "#b91c1c", fillColor: "#ef4444", fillOpacity: 0.95, weight: 2 })

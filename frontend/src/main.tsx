@@ -10,12 +10,14 @@ import {
   ChevronDown,
   ChevronRight,
   MapPin,
+  Minus,
   Pencil,
   Plus,
   Route,
   Search,
   Settings,
   ShieldAlert,
+  SlidersHorizontal,
   Trash2,
   X,
 } from "lucide-react";
@@ -26,6 +28,7 @@ import { MapView } from "./mapView";
 import { API, jsonFetch } from "./api";
 import { fetchCachedLayer } from "./layerCache";
 import { closureCsv, downloadCsv, openPrintableReport, signAndDeviceCsv } from "./export";
+import { filterPlanResources, resourceTotals, type ResourceCounts, type ResourceType } from "./resourcePriority";
 import type {
   FeatureCollection,
   GoldenDraft,
@@ -178,6 +181,13 @@ function App() {
     study_radius_ft: "2500",
     sign_max_distance_ft: "1500",
   });
+  // How many of each resource TYPE the user has available. The map only draws
+  // the top-N highest-priority features of each type; the rest are hidden.
+  const [resourceCounts, setResourceCounts] = useState<ResourceCounts>({
+    barricades: 0,
+    channelizing: 0,
+    signs: 0,
+  });
 
   async function loadLayers(forceRefresh = false) {
     setLoadToast("Loading GIS data in the background...");
@@ -327,28 +337,6 @@ function App() {
     setManualHydrantPickMode(false);
     setLoadToast("Manual hydrant location set. Click Add manual hydrant to save it.");
     setMessage("Manual hydrant location set. Click Add manual hydrant to save it.");
-  }
-
-  function savePlannerConfig() {
-    const hoseMax = Number(plannerConfigDraft.hose_max_ft);
-    const studyRadius = Number(plannerConfigDraft.study_radius_ft);
-    const signMax = Number(plannerConfigDraft.sign_max_distance_ft);
-    if (
-      !Number.isFinite(hoseMax) ||
-      hoseMax <= 0 ||
-      !Number.isFinite(studyRadius) ||
-      studyRadius <= 0 ||
-      !Number.isFinite(signMax) ||
-      signMax <= 0
-    ) {
-      setLoadToast("Configuration values must be positive numbers.");
-      setMessage("Configuration values must be positive numbers.");
-      return;
-    }
-    setPlannerConfig(plannerConfigDraft);
-    setLoadToast("Configuration saved for new recommendation runs.");
-    setMessage("Configuration saved for new recommendation runs.");
-    window.setTimeout(() => setLoadToast(""), 4500);
   }
 
   function addSecondaryIncident(nextIncident: Incident) {
@@ -762,6 +750,42 @@ function App() {
     }, 0);
   }, []);
 
+  // Auto-save planner configuration: whenever the draft inputs settle on valid
+  // positive numbers, commit them to the applied config (no Save button). The
+  // short debounce keeps typing from thrashing, and an invalid/empty value
+  // simply leaves the last applied config in place instead of clobbering it.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const hoseMax = Number(plannerConfigDraft.hose_max_ft);
+      const studyRadius = Number(plannerConfigDraft.study_radius_ft);
+      const signMax = Number(plannerConfigDraft.sign_max_distance_ft);
+      if (
+        Number.isFinite(hoseMax) &&
+        hoseMax > 0 &&
+        Number.isFinite(studyRadius) &&
+        studyRadius > 0 &&
+        Number.isFinite(signMax) &&
+        signMax > 0
+      ) {
+        setPlannerConfig(plannerConfigDraft);
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [plannerConfigDraft]);
+
+  // Resource availability totals come from the current plan. When a new plan
+  // loads, reset each available count back to its total so everything shows by
+  // default; the user then dials counts down to hide lower-priority extras.
+  const planResourceTotals = useMemo(() => resourceTotals(plan), [plan]);
+  useEffect(() => {
+    setResourceCounts(planResourceTotals);
+  }, [planResourceTotals]);
+
+  const filteredPlanResources = useMemo(
+    () => filterPlanResources(plan, resourceCounts),
+    [plan, resourceCounts],
+  );
+
   const selectedHydrant = useMemo(() => {
     const geom = plan?.selected_hydrant.geometry;
     if (!geom || geom.type !== "Point") return null;
@@ -864,6 +888,56 @@ function App() {
     );
   };
 
+  const setResourceCount = (type: ResourceType, next: number) => {
+    const total = planResourceTotals[type];
+    const clamped = Math.max(0, Math.min(total, Math.round(next)));
+    setResourceCounts((counts) => ({ ...counts, [type]: clamped }));
+  };
+
+  const renderResourceControl = (type: ResourceType, label: string) => {
+    const total = planResourceTotals[type];
+    const value = Math.min(resourceCounts[type], total);
+    return (
+      <div className="resource-control" key={type}>
+        <span className="resource-label">{label}</span>
+        <div className="resource-stepper">
+          <button
+            type="button"
+            onClick={() => setResourceCount(type, value - 1)}
+            disabled={value <= 0}
+            title={`Hide one ${label.toLowerCase()}`}
+            aria-label={`Decrease available ${label.toLowerCase()}`}
+          >
+            <Minus size={16} />
+          </button>
+          <input
+            type="number"
+            min={0}
+            max={total}
+            value={value}
+            aria-label={`${label} available`}
+            onChange={(e) => {
+              if (e.target.value === "") return;
+              const n = Number(e.target.value);
+              if (!Number.isFinite(n)) return;
+              setResourceCount(type, n);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => setResourceCount(type, value + 1)}
+            disabled={value >= total}
+            title={`Show one more ${label.toLowerCase()}`}
+            aria-label={`Increase available ${label.toLowerCase()}`}
+          >
+            <Plus size={16} />
+          </button>
+        </div>
+        <span className="resource-count">{value} of {total} shown</span>
+      </div>
+    );
+  };
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -933,9 +1007,9 @@ function App() {
                   placeholder="1500"
                 />
               </label>
-              <button onClick={savePlannerConfig} title="Save configuration">
-                <Check size={18} /> Save Configuration
-              </button>
+              <div className="config-applied" role="status">
+                Auto-applied: hose {plannerConfig.hose_max_ft} ft · study {plannerConfig.study_radius_ft} ft · sign {plannerConfig.sign_max_distance_ft} ft
+              </div>
             </div>
           )}
         </section>
@@ -1260,6 +1334,15 @@ function App() {
                 <span>{planMeaning.nextStep}</span>
               </div>
             )}
+            <div className="subsection resource-availability">
+              <h3><SlidersHorizontal size={16} /> Resource availability</h3>
+              <span className="resource-help">
+                Set how many of each resource you have. Lower the count to hide the lowest-priority units; the map updates live.
+              </span>
+              {renderResourceControl("barricades", "Barricades")}
+              {renderResourceControl("channelizing", "Channelizing devices")}
+              {renderResourceControl("signs", "Signs")}
+            </div>
             <div className="inline">
               <button onClick={addHydrantAndRerun} disabled={!incident || isPlanning || hydrantCount >= 4}>
                 <Droplets size={18} /> Add Hydrant
@@ -1375,6 +1458,8 @@ function App() {
         plan={plan}
         planVersion={planVersion}
         displayPlanLayers={displayPlanLayers}
+        displaySigns={filteredPlanResources.warning_signs ?? null}
+        displayDevices={filteredPlanResources.devices ?? null}
         selectedHydrantFeatures={selectedHydrantFeatures}
         loadToast={loadToast}
         onPick={setIncidentLocation}

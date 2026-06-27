@@ -19,7 +19,8 @@ PLAN_CACHE_DIR = GENERATED_DIR / "plan_cache"
 # Bump to invalidate cached plan results after a scoring/algorithm change.
 # v2: overlay geometry now follows the road polyline (closures, hose, signs,
 # devices) instead of straight node-to-node lines.
-PLAN_CACHE_VERSION = 2
+# v3: closure min-cut is distance-weighted toward the incident (tight cordon).
+PLAN_CACHE_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,13 @@ SCORING_WEIGHTS = ScoringWeights()
 # Fraction of the study radius beyond which nodes are treated as the outside
 # (perimeter) traffic source for the closure min-cut.
 PERIMETER_FRACTION = 0.75
+
+# Distance weighting for the closure min-cut. A road's cut cost is multiplied by
+# (1 + CLOSURE_DISTANCE_WEIGHT * distance_to_incident / study_radius), so closing
+# a road far from the incident is much more expensive than closing one nearby.
+# This biases the minimum cut toward a tight cordon hugging the incident instead
+# of a cheap-but-scattered separating set on distant streets. 0 disables it.
+CLOSURE_DISTANCE_WEIGHT = 8.0
 
 MANUAL_HYDRANTS_CSV = MANUAL_DIR / "manual_hydrants.csv"
 SCENARIOS_CSV = SCENARIO_DIR / "incidents.csv"

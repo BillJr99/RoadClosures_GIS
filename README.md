@@ -542,10 +542,29 @@ The closure problem is modeled as a graph cut:
 - super-sink: incident-area nodes
 - protected edges: hose route edges get very high capacity
 - closure cost: road class plus sightline penalties from grade/curvature where
-  present
+  present, then **distance-weighted** (see below)
 
 NetworkX `minimum_cut` finds the least-cost edge set separating outside traffic
 from the incident area. Those cut edges become closure recommendations.
+
+**Distance-weighted cordon.** A plain min-cut minimizes total cost with no notion
+of *where* the cut sits, so on some road networks the cheapest separating set is a
+scatter of cheap local streets far from the incident rather than a tight ring
+around it. To fix that, each road's cut cost is multiplied by
+
+```text
+1 + CLOSURE_DISTANCE_WEIGHT * (distance_from_incident / study_radius)
+```
+
+(`CLOSURE_DISTANCE_WEIGHT` in `backend/app/config.py`, default 8.0). Closing a road
+far from the incident is therefore much more expensive than closing one nearby, so
+the minimum cut forms the tightest sensible cordon hugging the incident. The
+weighting only changes outcomes where a scattered cheaper cut existed; where the
+tight ring was already optimal (as in the seeded Norristown scenario) the result is
+unchanged. The distance multiplier drives only the cut; the **road-class cost**
+(`base_capacity`) is what is reported and used for ranking, so a near major road
+still ranks above a far minor one and the displayed closure cost reflects the road,
+not how far away it is.
 
 Each closure's `sightline` label (`good`/`caution`) is derived from the edge's
 geometry penalty (`_sightline_penalty`, curvature + grade), not from the road
@@ -769,6 +788,288 @@ before operational use.
 The backend serves API endpoints for GIS layer generation, manual hydrant
 editing, geocoding, and incident planning. The frontend is a React + Leaflet map
 that consumes those APIs.
+
+## Graph Theory and Its Applications
+
+This chapter explains the graph theory the planner rests on and how each concept
+maps to a concrete fire-police decision. None of it requires prior graph theory;
+each idea is introduced before it is used.
+
+### Why a graph at all
+
+A road network is naturally a **graph**: a set of **nodes** (vertices) connected by
+**edges**. In this app:
+
+- **Nodes** are intersections and the endpoints of road segments. Each node has a
+  projected coordinate (`x`, `y`) in meters (UTM), and optionally an `elevation`.
+- **Edges** are the road segments between nodes. Each edge carries attributes:
+  `length` (meters), road class (`highway`, `county_func_class`), an optional
+  curved `geometry` (the real road polyline), and — when elevation enrichment has
+  run — `grade` and `elevation_change_m`.
+
+The graph is **directed** (a `DiGraph`/`MultiDiGraph` from OSMnx): an edge `u → v`
+models travel in one direction, so one-way streets and asymmetric turns are
+representable. Parallel edges between the same pair of nodes (a divided road, a
+service lane) are collapsed to the shortest one where a single edge is needed.
+
+Representing roads as a graph is what makes the four core questions answerable with
+standard, well-understood algorithms instead of ad-hoc geometry:
+
+1. *Which hydrant can feed the scene?* → **shortest path**.
+2. *What route would the hose follow?* → the **path** itself.
+3. *Which roads isolate the scene?* → **minimum cut / maximum flow**.
+4. *Where do advance signs go?* → a **bounded walk** along predecessor edges.
+
+### Shortest paths (hydrant reachability and hose routing)
+
+To decide whether a hydrant can reach the incident within the hose envelope, the
+planner snaps both the hydrant and the incident to their nearest graph nodes and
+computes the **shortest path** over edge `length` using NetworkX (Dijkstra's
+algorithm). The path's total length is the estimated hose run; candidates longer
+than `hose_max_ft` are rejected.
+
+Shortest path is the right model because hose is laid *along roads*, not as the
+crow flies. A hydrant that is closer in straight-line distance can lose to a
+slightly farther one whose road path is shorter, straighter, or flatter. The graph
+makes "distance along the road network" a first-class, computable quantity.
+
+> Dijkstra's algorithm runs in `O(E + V log V)` time on a graph with `V` nodes and
+> `E` edges; on incident-local road graphs this is effectively instantaneous.
+
+### Curvature (a geometric property of a path)
+
+**Curvature** is a property of a *path through the graph*, not of a single edge. For
+each interior node on a path the planner measures the turn angle between the
+incoming and outgoing direction vectors and sums those angles:
+
+```text
+total_curvature = Σ turn_angle_radians   (over consecutive node triples)
+```
+
+A straight run accumulates ~0; a path with many bends accumulates more. This is a
+standard geometric proxy for how indirect or bend-heavy a polyline is. It feeds the
+hydrant score (a curvier hose run is penalized) and the closure **sightline** label
+(a curvier approach is harder to see and is flagged `caution`).
+
+### Maximum flow and minimum cut (road closures)
+
+Isolating an incident is a **graph separation** problem, solved with the classic
+**max-flow / min-cut** duality:
+
+- A **cut** is a set of edges whose removal disconnects one group of nodes from
+  another. Here it disconnects *outside traffic* from the *incident area*.
+- The **minimum cut** is the cheapest such set, where each edge has a **capacity**
+  (its closure cost). By the **max-flow/min-cut theorem**, the value of the minimum
+  cut equals the value of the maximum flow between the two sides, which is what lets
+  NetworkX compute it efficiently.
+
+The construction (see `_build_flow_graph`):
+
+- a **super-source** connected to all *perimeter* nodes (beyond `PERIMETER_FRACTION`
+  of the study radius) — "outside traffic";
+- a **super-sink** connected to all *incident-area* nodes — the scene to isolate;
+- **protected edges**: every edge on the chosen hose route is given (effectively)
+  infinite capacity, so the cut can never sever the hose line;
+- **closure cost** per edge: road-class cost × sightline penalty, then
+  distance-weighted toward the incident (see
+  [Closure Min-Cut Algorithm](#closure-min-cut-algorithm)).
+
+The minimum cut is then exactly "the least-disruptive set of road closures that
+separates through-traffic from the incident without cutting the hose." If even the
+cheapest cut is infinite (the only separators cross the protected hose), the scene
+is reported **infeasible** rather than returning a misleading list. The planner uses
+the `preflow_push` max-flow algorithm, which is fast on road-sized graphs and
+returns the same (unique) min-cut value as the default solver.
+
+### Connectivity, components, and feasibility
+
+Whether a finite cut even exists is a **connectivity** question. If the incident
+area and the perimeter live in different connected components, or the only paths
+between them are protected hose edges, no finite separating set exists — surfaced as
+`feasible: false`. Reasoning about the network as a graph makes these structural
+edge cases explicit instead of silent.
+
+### Spatial indexing (making the graph usable at scale)
+
+Two non-graph steps make the graph practical:
+
+- **Nearest-node snapping** maps a lat/lon (incident, hydrant) to the closest graph
+  node. Hydrants are projected once in a batch and culled with a **SciPy KD-tree**
+  (`_within_radius_indices`) before any routing, so only plausibly-reachable
+  hydrants are ever routed — turning an `O(hydrants × path)` scan into a fast
+  spatial query plus a handful of shortest paths.
+- **Operational-area tiles** and an **incident-local cache** store prebuilt graphs
+  so planning can run offline after a one-time fetch (see
+  [Routing Graph Strategy](#routing-graph-strategy)).
+
+### How the pieces compose
+
+A single plan threads all of the above: snap incident → KD-tree cull hydrants →
+shortest-path each survivor (length, curvature, grade) → score and pick → protect
+that path's edges → distance-weighted min-cut for closures → bounded upstream walk
+for advance signs and channelizing tapers. Every step is a standard graph or
+computational-geometry operation, which is what keeps the recommendations auditable
+and reproducible.
+
+## MUTCD Standards and Resource Placement
+
+Every field resource the app proposes is **advisory** and derived from published
+**MUTCD** defaults (the FHWA *Manual on Uniform Traffic Control Devices*, 11th
+Edition with Revision 1). The app applies the standard's default spacings and sizes;
+it does **not** replace engineering judgment, the authority having jurisdiction,
+police direction, or field conditions (intersections, driveways, sightlines, grade,
+weather). The citations below are the specific provisions each placement is based
+on, and where in the code they live.
+
+### Resources considered in this app (glossary)
+
+- **Advance-warning sign** — a sign placed *upstream* of a closure to warn
+  approaching drivers before they reach it. The app emits an A/B/C sequence (the
+  closest sign first, then farther ones). MUTCD codes used:
+  - **`W20-3` "ROAD CLOSED AHEAD"** — the nearest advance-warning sign (sequence A).
+  - **`W20-1`** — the farther advance-warning signs (sequences B/C).
+  - Reference: warning-sign series, MUTCD Part 2C / Part 6; sizes from the
+    conventional-road standard (Table 2C-2). See `ADVANCE_SIGN_SPECS` in
+    `backend/app/services/warning_signs.py`.
+- **`R11-2` "ROAD CLOSED" sign** — a *regulatory* sign mounted at the closure point
+  itself, carried on the barricade. Reference: MUTCD Part 2B / Part 6 (`R11`
+  series). See `CLOSURE_POINT_SIGN`.
+- **Type III barricade** — a full-width barricade (three reflectorized rails on
+  supports) used to physically close a road. The app places one at each closure's
+  midpoint, carrying the `R11-2` sign. Reference: MUTCD Part 6 channelizing/barricade
+  provisions.
+- **Channelizing device** — a **cone, tubular marker, or drum** used to form a
+  *taper* that guides (channelizes) traffic away from the closed area. Channelizing
+  devices *guide*; the barricade *blocks*. The app places a cone/drum taper on each
+  approach to a closure. Reference: MUTCD Part 6 channelizing-device and taper
+  provisions. See `device_features`.
+
+### Advance-warning sign spacing — Table 6B-1
+
+Advance-warning sign distances come from **MUTCD 11th Edition, Rev. 1, Part 6,
+Table 6B-1** (recommended advance-warning sign spacing), keyed by road type:
+
+| Road type            | A    | B    | C    |
+|----------------------|------|------|------|
+| urban low speed      | 100  | 100  | 100  |
+| urban high speed     | 350  | 350  | 350  |
+| rural                | 500  | 500  | 500  |
+| expressway/freeway   | 1000 | 1500 | 2640 |
+
+(distances in feet). The road type is chosen from posted speed (`maxspeed`) when
+available, else the road class; the choice is recorded on each sign as
+`road_type_basis` and `speed_source` so the selected Table 6B-1 row is auditable
+even when posted speed is missing. Spacing values live in `MUTCD_TABLE_6B1`.
+
+### Channelizing-device tapers — Part 6 taper formula
+
+Taper **length** `L` for one lane width `W` at speed `S` follows the MUTCD Part 6
+merging-taper formulas:
+
+```text
+L = W · S² / 60      for S < 45 mph
+L = W · S            for S ≥ 45 mph
+```
+
+with `W` defaulting to a 12 ft lane and `S` from `maxspeed` (else a per–road-type
+default). Channelizing-device **spacing** along the taper is taken as the posted
+speed in feet (MUTCD guidance that device spacing in a taper should not exceed a
+distance in feet equal to the speed in mph). See `_taper_length_ft` and
+`device_features`.
+
+### Placement, deployment priority, and compliance
+
+- Signs and tapers are traced **upstream along the actual road geometry**, preferring
+  the straightest continuation through intersections so a sign stays on the intended
+  approach. When the graph runs out of upstream road, the sign is flagged `limited`
+  with a `shortfall_ft` so a reviewer can see the graph fell short.
+- Each closure and its signs/devices carry a **deployment priority** (traffic
+  exposure × visibility) telling crews the order to stage things under limited
+  resources. The Resource Availability controls use this priority to decide which
+  items to show when you tell the app how many barricades, channelizing devices, or
+  signs you actually have.
+- `plan.compliance` summarizes advance-warning **coverage**: each closure has two
+  approach sides, and a side counts as covered only when an advance sign was actually
+  placed on the graph (not merely projected).
+
+All of the above are MUTCD-derived **starting points** and must be reviewed against
+field conditions and agency policy before use.
+
+## Creating and Uploading Golden Reports
+
+A **golden report** is an accepted, expert-reviewed expectation for a scenario. Once
+a scenario has a golden, every future run is compared against it, so the app — and
+its automated test suite — can flag when a planner change alters a previously
+accepted result. There are two complementary kinds of golden, and both can be
+created from any run, scenario, or ad-hoc incident.
+
+### The two kinds of golden
+
+1. **Promoted-run golden (regression baseline).** The reviewed `summary.json` from a
+   specific run, copied into `data/scenario_golden/`. It captures *what the planner
+   produced and a human accepted*: selected hydrant, closure count, and closure road
+   names. Future runs that differ from it are reported as `changed`.
+2. **Expert golden (human expectation).** A hand-authored statement of what a domain
+   expert *expects* — expected hydrant, expected closure roads, expected advance
+   signs, plus reviewer name and notes — stored as a `ScenarioGolden`
+   (`data/scenarios/goldens/`). It encodes ground truth independent of the current
+   algorithm and is compared first (`compare_to_expert_golden`).
+
+### Creating a golden from a run (promotion)
+
+Any run — a scenario run *or* an ad-hoc "Recommend Closures" incident — can become a
+golden once a reviewer accepts it:
+
+1. Run the scenario (or save an ad-hoc incident from the map).
+2. Open the run's **View report** (the what/where/why HTML report) and review the
+   selected hydrant, hose route, ranked closures, and advance signs against your
+   field judgment and the scenario's `reviewer_notes` /
+   `expected_hydrant_hint` / `expected_closure_hint`.
+3. In the **Scenario Runs** panel, expand the run and click **Promote Run** once to
+   arm, then again to confirm (two-step to prevent accidental promotion). This calls
+   `POST /api/scenario-runs/{run_id}/promote`, which copies the reviewed summaries
+   into `data/scenario_golden/`.
+
+From the command line the same promotion is:
+
+```bash
+scripts/update_scenario_golden.sh data/scenario_runs/<timestamp>
+```
+
+After promotion, re-run the scenario to confirm the golden now matches.
+
+### Creating / uploading an expert golden through the UI
+
+To record a human expectation (independent of what the planner currently does), use
+the scenario's **golden editor** in the app:
+
+1. Select the scenario.
+2. Open its golden editor and fill in the expected hydrant (name/source), the
+   expected closure roads (one per line, `road | reason | notes`), the expected
+   advance signs (`road | sign label | distance_ft | notes`), and reviewer name /
+   notes.
+3. Save. The UI sends `PUT /api/scenarios/{scenario_id}/golden` (model
+   `ScenarioGolden`), persisting it to `data/scenarios/goldens/`. `DELETE` removes
+   it; `GET` re-loads it for editing.
+
+Because the expert golden is plain structured text, it can also be authored or
+bulk-edited in the goldens files directly and picked up by the app on reload.
+
+### How goldens inform the app and its tests
+
+- **In the app:** when you review a run, the Scenario Runs panel shows the golden
+  comparison — `matched`, `expert_matched`, `missing` (no golden yet), or `changed`
+  (a previously accepted result moved and needs review).
+- **In the test suite:** `scripts/run_scenarios.sh` (and
+  `RUN_SCENARIOS=1 scripts/test_all.sh`) runs every active scenario and **exits
+  nonzero** if a run fails or if a previously approved golden changes. Promoting a
+  reviewed run therefore turns it into a regression test; authoring an expert golden
+  turns expert judgment into an automated check. Missing goldens are reported (not
+  failures) so the first reviewed run can be promoted.
+
+Promote or author goldens **only after a human accepts** the hydrant, hose route,
+and closure list — a golden is a commitment that "this result is correct," so the
+quality of the regression suite is exactly the quality of the reviews behind it.
 
 ## Git
 

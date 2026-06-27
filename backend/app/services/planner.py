@@ -8,6 +8,7 @@ import networkx as nx
 from networkx.algorithms.flow import preflow_push
 
 from app.config import (
+    CLOSURE_DISTANCE_WEIGHT,
     PERIMETER_FRACTION,
     RECONCILED_HYDRANTS_GEOJSON,
     ROAD_GRAPH_GRAPHML,
@@ -457,20 +458,55 @@ def _deployment_score(data: dict[str, Any]) -> float:
     return _class_cost(data) * _sightline_penalty(data)
 
 
+def _closure_distance_factor(
+    graph: Any,
+    u: int,
+    v: int,
+    incident_xy: tuple[float, float] | None,
+    scale_m: float | None,
+) -> float:
+    """Multiplier (>= 1) applied to a road's cut cost based on how far the edge
+    sits from the incident. Closing a far road costs more, so the minimum cut
+    forms a tight cordon around the incident instead of a scattered cheap set.
+
+    Returns 1.0 (no weighting) when the incident location or scale is unknown,
+    which keeps the bare min-cut behavior used by the unit tests.
+    """
+    if incident_xy is None or not scale_m or scale_m <= 0 or CLOSURE_DISTANCE_WEIGHT <= 0:
+        return 1.0
+    ux, uy = _node_xy(graph, u)
+    vx, vy = _node_xy(graph, v)
+    mid_x, mid_y = (ux + vx) / 2.0, (uy + vy) / 2.0
+    distance_m = math.hypot(mid_x - incident_xy[0], mid_y - incident_xy[1])
+    return 1.0 + CLOSURE_DISTANCE_WEIGHT * (distance_m / scale_m)
+
+
 def _build_flow_graph(
     graph: Any,
     incident_nodes: list[int],
     external_nodes: list[int],
     hose_edges: set[tuple[int, int]],
+    incident_xy: tuple[float, float] | None = None,
+    distance_scale_m: float | None = None,
 ) -> nx.DiGraph:
     flow = nx.DiGraph()
     for u, v, data in graph.edges(data=True):
         u_int, v_int = int(u), int(v)
-        cap = INF_CAP if (u_int, v_int) in hose_edges else _edge_capacity(data)
-        if flow.has_edge(u_int, v_int):
-            flow[u_int][v_int]["capacity"] = min(float(flow[u_int][v_int]["capacity"]), cap)
+        base = _edge_capacity(data)
+        if (u_int, v_int) in hose_edges:
+            cap = INF_CAP
         else:
-            flow.add_edge(u_int, v_int, capacity=cap, source_data=data)
+            cap = base * _closure_distance_factor(graph, u_int, v_int, incident_xy, distance_scale_m)
+        if flow.has_edge(u_int, v_int):
+            if cap < float(flow[u_int][v_int]["capacity"]):
+                flow[u_int][v_int]["capacity"] = cap
+                flow[u_int][v_int]["base_capacity"] = base
+                flow[u_int][v_int]["source_data"] = data
+        else:
+            # `capacity` drives the min-cut (distance-weighted); `base_capacity`
+            # is the road-class cost kept for ranking and display so distance does
+            # not distort how closures are ranked or what cost is reported.
+            flow.add_edge(u_int, v_int, capacity=cap, base_capacity=base, source_data=data)
     flow.add_node(SUPER_SOURCE)
     flow.add_node(SUPER_SINK)
     for node in external_nodes:
@@ -589,7 +625,9 @@ def _closure_feature(
         [float(lon), float(lat)]
         for lon, lat in (transformer.transform(x, y) for x, y in _edge_xy_coords(graph, u, v, source))
     ]
-    capacity = float(data.get("capacity", 0.0))
+    # Report the road-class closure cost (base_capacity), not the distance-weighted
+    # cut capacity, so the displayed cost reflects the road, not how far it is.
+    capacity = float(data.get("base_capacity", data.get("capacity", 0.0)))
     return line_feature(
         coords,
         {
@@ -677,7 +715,14 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     incident_nodes = sorted(set(incident_nodes))
     external_nodes = _perimeter_nodes(graph, x, y, req.study_radius_ft * FT_TO_M * PERIMETER_FRACTION)
 
-    flow = _build_flow_graph(graph, incident_nodes, external_nodes, hose_edges)
+    flow = _build_flow_graph(
+        graph,
+        incident_nodes,
+        external_nodes,
+        hose_edges,
+        incident_xy=(x, y),
+        distance_scale_m=req.study_radius_ft * FT_TO_M,
+    )
     # preflow_push is typically much faster than the default edmonds_karp on
     # road-sized graphs; the min-cut value is unique and float capacities make
     # tied partitions vanishingly rare.
@@ -695,7 +740,13 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         else "No finite closure set isolates the incident without crossing the protected hose route; widen the study radius or review the hose path."
     )
     closures = _closure_edges(flow, set(reachable), set(non_reachable))
-    ranked = sorted(closures, key=lambda item: float(item[2].get("capacity", 0.0)), reverse=True)
+    # Rank by road-class closure cost (base_capacity), not the distance-weighted
+    # cut capacity, so a near major road still ranks above a far minor one.
+    ranked = sorted(
+        closures,
+        key=lambda item: float(item[2].get("base_capacity", item[2].get("capacity", 0.0))),
+        reverse=True,
+    )
 
     # Deployment priority: order closures by field set-up urgency (traffic
     # exposure x poor visibility), tie-broken by cut capacity. This is a
@@ -703,7 +754,10 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     # which barriers and signs to stage first under limited resources.
     deploy_order = sorted(
         ranked,
-        key=lambda item: (_deployment_score(item[2].get("source_data") or {}), float(item[2].get("capacity", 0.0))),
+        key=lambda item: (
+            _deployment_score(item[2].get("source_data") or {}),
+            float(item[2].get("base_capacity", item[2].get("capacity", 0.0))),
+        ),
         reverse=True,
     )
     priority_by_edge = {(u, v): index for index, (u, v, _) in enumerate(deploy_order, start=1)}
