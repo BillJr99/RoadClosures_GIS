@@ -293,6 +293,11 @@ button.primary {
   font-size: 13px;
 }
 
+.explain-box.warning {
+  border-left-color: #dc2626;
+  background: #fef2f2;
+}
+
 .confirm-row {
   grid-template-columns: 1fr auto auto;
   align-items: center;

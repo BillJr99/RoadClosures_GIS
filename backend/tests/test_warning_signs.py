@@ -1,6 +1,13 @@
+import math
+
 import networkx as nx
 
-from app.services.warning_signs import MUTCD_TABLE_6B1, road_type_for_edge, warning_sign_features
+from app.services.warning_signs import (
+    MUTCD_TABLE_6B1,
+    _bearing_diff,
+    road_type_for_edge,
+    warning_sign_features,
+)
 
 
 def test_mutcd_table_defaults_and_warning_sign_output() -> None:
@@ -23,9 +30,21 @@ def test_mutcd_table_defaults_and_warning_sign_output() -> None:
     assert signs["features"][0]["properties"]["mutcd_table"] == "MUTCD 11th Edition Revision 1 Table 6B-1"
     assert signs["features"][0]["properties"]["placement_status"] == "placed"
     assert any(feature["properties"]["placement_status"] == "limited" for feature in signs["features"])
+    # Placed signs report zero shortfall; limited signs report how far short the graph fell.
+    placed = next(f for f in signs["features"] if f["properties"]["placement_status"] == "placed")
+    limited = next(f for f in signs["features"] if f["properties"]["placement_status"] == "limited")
+    assert placed["properties"]["shortfall_ft"] == 0.0
+    assert limited["properties"]["shortfall_ft"] > 0.0
     # Without a priority list, deployment fields are present but unset.
     assert signs["features"][0]["properties"]["deployment_priority"] is None
     assert signs["features"][0]["properties"]["deployment_label"] is None
+
+
+def test_bearing_diff_is_symmetric_and_wraps() -> None:
+    assert _bearing_diff(0.0, 0.0) == 0.0
+    assert math.isclose(_bearing_diff(0.0, math.pi), math.pi)
+    # 350deg vs 10deg are 20deg apart, not 340.
+    assert math.isclose(_bearing_diff(math.radians(350), math.radians(10)), math.radians(20), abs_tol=1e-9)
 
 
 def test_warning_signs_inherit_deployment_priority() -> None:

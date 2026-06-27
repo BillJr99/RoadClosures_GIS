@@ -69,6 +69,8 @@ type Scenario = {
 
 type PlanResponse = {
   cut_value: number;
+  feasible?: boolean;
+  feasibility_note?: string;
   selected_hydrant: GeoJSON.Feature;
   selected_hydrants?: FeatureCollection;
   hose_route: GeoJSON.Feature;
@@ -1362,6 +1364,12 @@ function App() {
         {plan && (
           <section className="panel">
             <h2>Plan Review</h2>
+            {plan.feasible === false && (
+              <div className="explain-box warning" role="alert">
+                <strong>Closure isolation not feasible</strong>
+                <span>{String(plan.feasibility_note || "No finite closure set isolates the incident.")}</span>
+              </div>
+            )}
             {planMeaning && (
               <div className="explain-box">
                 <strong>Recommendation summary</strong>

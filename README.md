@@ -466,14 +466,20 @@ For each hydrant, the planner snaps the hydrant and incident to nearest graph
 nodes. It then uses NetworkX shortest path over edge `length` to estimate the
 hose route. Candidates over `hose_max_ft` are rejected.
 
-Hydrant score is currently:
+The hydrant score is a weighted sum of **normalized** terms (lower is better):
 
 ```text
-length_m + (curvature_radians * 75.0) + (elevation_change_m * 2.0)
+score = w_length   * (length_m / hose_max_m)
+      + w_curvature * (curvature_radians / pi)
+      + w_grade     * (max_grade / MAX_GRADE)
+      + w_snap      * (hydrant_snap_m / max_snap_m)
 ```
 
-Lower score is better. This makes length the dominant factor while still
-penalizing twisty or hilly routes.
+Normalizing each term to roughly 0..1 before weighting keeps the weights
+unit-free and comparable (instead of mixing raw meters with radians). The
+weights live in `ScoringWeights` in `backend/app/config.py`. The planner returns
+a per-candidate `score_breakdown` (the normalized contribution of each term) so a
+reviewer can see *why* one hydrant beat another.
 
 ### Curvature Algorithm
 
@@ -517,7 +523,8 @@ edges. Use `scripts/audit_road_matching.sh` to generate a CSV for review.
 
 The closure problem is modeled as a graph cut:
 
-- super-source: outside traffic/perimeter nodes
+- super-source: outside traffic/perimeter nodes (nodes beyond
+  `PERIMETER_FRACTION` of the study radius, configured in `backend/app/config.py`)
 - super-sink: incident-area nodes
 - protected edges: hose route edges get very high capacity
 - closure cost: road class plus sightline penalties from grade/curvature where
@@ -526,13 +533,25 @@ The closure problem is modeled as a graph cut:
 NetworkX `minimum_cut` finds the least-cost edge set separating outside traffic
 from the incident area. Those cut edges become closure recommendations.
 
+Each closure's `sightline` label (`good`/`caution`) is derived from the edge's
+geometry penalty (`_sightline_penalty`, curvature + grade), not from the road
+class, so a sharp or steep approach reads as caution regardless of size. If the
+cheapest cut still costs near-infinity (no finite closure set can isolate the
+incident without crossing the protected hose route), the response sets
+`feasible: false` with a `feasibility_note`, and the UI shows a warning banner
+instead of a misleading closure list.
+
 ### MUTCD Warning Sign Algorithm
 
 For each closure edge, the planner classifies the road approach as urban low
 speed, urban high speed, rural, or expressway/freeway. It then applies MUTCD
 Table 6B-1 A/B/C distances and traces upstream along predecessor edges to place
-candidate signs. Outputs include placement status and warning fields so a
-reviewer can see whether the graph had enough upstream path.
+candidate signs. The upstream walk prefers the edge that best continues the
+closure's heading (straightest continuation by bearing) so a sign stays on the
+intended approach through complex intersections. Outputs include placement status
+and warning fields, plus a `shortfall_ft` value showing how far short the graph
+fell when a sign is `limited`, so a reviewer can see whether the graph had enough
+upstream path.
 
 ### Deployment Priority
 

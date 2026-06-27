@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
 
-from app.config import RECONCILED_HYDRANTS_GEOJSON, ROAD_GRAPH_GRAPHML
+from app.config import (
+    PERIMETER_FRACTION,
+    RECONCILED_HYDRANTS_GEOJSON,
+    ROAD_GRAPH_GRAPHML,
+    SCORING_WEIGHTS,
+)
 from app.geojson import line_feature, point_feature, read_geojson
 from app.models import IncidentPlanRequest
 from app.services.elevation import path_max_grade
@@ -54,6 +59,7 @@ class HydrantCandidate:
     elevation_change_m: float
     max_grade: float
     score: float
+    score_breakdown: dict[str, float] = field(default_factory=dict)
 
 
 def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, Any]]:
@@ -203,6 +209,34 @@ def _path_elevation_change(graph: Any, path: list[int]) -> float:
     return total
 
 
+def _hydrant_score(
+    length_m: float,
+    max_m: float,
+    curvature: float,
+    max_grade: float,
+    hydrant_snap_m: float,
+    max_snap_m: float,
+) -> tuple[float, dict[str, float]]:
+    """Composite hydrant/hose score (lower is better) from normalized terms.
+
+    Each term is normalized to ~0..1 against a sensible reference so the
+    weights in ``SCORING_WEIGHTS`` are unit-free and comparable, instead of
+    mixing raw meters with radians on one additive scale.
+    """
+    w = SCORING_WEIGHTS
+    n_length = length_m / max_m if max_m else 0.0
+    n_curvature = curvature / math.pi
+    n_grade = (abs(max_grade) / w.max_grade) if w.max_grade else 0.0
+    n_snap = hydrant_snap_m / max_snap_m if max_snap_m else 0.0
+    breakdown = {
+        "length": round(w.length * n_length, 4),
+        "curvature": round(w.curvature * n_curvature, 4),
+        "grade": round(w.grade * n_grade, 4),
+        "snap": round(w.snap * n_snap, 4),
+    }
+    return sum(breakdown.values()), breakdown
+
+
 def _hydrant_features() -> list[dict[str, Any]]:
     return read_geojson(RECONCILED_HYDRANTS_GEOJSON)["features"]
 
@@ -262,7 +296,7 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
         curvature = _path_curvature(graph, path)
         elev_change = _path_elevation_change(graph, path)
         max_grade = path_max_grade(graph, path)
-        score = length_m + (curvature * 75.0) + (elev_change * 2.0) + (hydrant_snap_m * 2.0)
+        score, breakdown = _hydrant_score(length_m, max_m, curvature, max_grade, hydrant_snap_m, max_snap_m)
         candidates.append(
             HydrantCandidate(
                 feature,
@@ -277,6 +311,7 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
                 elev_change,
                 max_grade,
                 score,
+                breakdown,
             )
         )
         if debug is not None:
@@ -422,7 +457,7 @@ def _closure_feature(
             "abs_grade": source.get("abs_grade"),
             "elevation_change_m": source.get("elevation_change_m"),
             "reason": "Minimum cut closure edge; hose route protected",
-            "sightline": "caution" if capacity >= 6 else "good",
+            "sightline": "caution" if _sightline_penalty(source) > 1.5 else "good",
         },
     )
 
@@ -463,6 +498,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
             "incident_snap_ft": round(item.incident_snap_m * M_TO_FT, 1),
             "direct_distance_ft": round(item.direct_distance_m * M_TO_FT, 1),
             "score": round(item.score, 3),
+            "score_breakdown": item.score_breakdown,
             "path_node_count": len(item.path),
         }
         for item in candidates[:10]
@@ -477,11 +513,20 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         incident_node = _nearest_node(graph, incident_lon, incident_lat)
         incident_nodes.extend(_nodes_within(graph, incident_x, incident_y, req.incident_radius_ft * FT_TO_M) or [incident_node])
     incident_nodes = sorted(set(incident_nodes))
-    external_nodes = _perimeter_nodes(graph, x, y, req.study_radius_ft * FT_TO_M * 0.75)
+    external_nodes = _perimeter_nodes(graph, x, y, req.study_radius_ft * FT_TO_M * PERIMETER_FRACTION)
 
     flow = _build_flow_graph(graph, incident_nodes, external_nodes, hose_edges)
     cut_value, partition = nx.minimum_cut(flow, SUPER_SOURCE, SUPER_SINK, capacity="capacity")
     reachable, non_reachable = partition
+    # If the cheapest cut still has near-infinite cost, no finite set of
+    # closures can isolate the incident without cutting the protected hose
+    # route. Surface that instead of returning a misleading closure list.
+    feasible = float(cut_value) < INF_CAP
+    feasibility_note = (
+        ""
+        if feasible
+        else "No finite closure set isolates the incident without crossing the protected hose route; widen the study radius or review the hose path."
+    )
     closures = _closure_edges(flow, set(reachable), set(non_reachable))
     ranked = sorted(closures, key=lambda item: float(item[2].get("capacity", 0.0)), reverse=True)
 
@@ -543,6 +588,8 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
 
     return {
         "cut_value": round(float(cut_value), 3),
+        "feasible": feasible,
+        "feasibility_note": feasibility_note,
         "selected_hydrant": hydrant_feature,
         "selected_hydrants": {"type": "FeatureCollection", "features": hydrant_features},
         "hose_route": hose_feature,
@@ -568,6 +615,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
                 "elevation_change_ft": round(item.elevation_change_m * M_TO_FT, 1),
                 "max_grade": round(item.max_grade, 5),
                 "score": round(item.score, 3),
+                "score_breakdown": item.score_breakdown,
             }
             for item in candidates[:10]
         ],

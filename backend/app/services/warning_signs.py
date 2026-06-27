@@ -108,16 +108,33 @@ def _road_name(data: dict[str, Any]) -> str:
     return str(name or "").strip().lower()
 
 
+def _bearing(graph: Any, a: int, b: int) -> float:
+    ax, ay = _xy(graph, a)
+    bx, by = _xy(graph, b)
+    return math.atan2(by - ay, bx - ax)
+
+
+def _bearing_diff(a: float, b: float) -> float:
+    """Smallest absolute angle between two bearings, in radians (0..pi)."""
+    diff = abs(a - b) % (2 * math.pi)
+    return min(diff, 2 * math.pi - diff)
+
+
 def _approach_candidates(graph: Any, current: int, previous: int, closure_name: str) -> list[int]:
     nodes = {
         int(node)
         for node in [*graph.predecessors(current), *graph.successors(current)]
         if int(node) != int(previous)
     }
+    # Heading of the segment we just travelled (previous -> current); the
+    # straightest continuation keeps an advance sign on the same approach
+    # through a complex intersection rather than veering onto a side street.
+    incoming = _bearing(graph, previous, current)
     return sorted(
         nodes,
         key=lambda node: (
             _road_name(_edge_source(graph, current, node)) != closure_name,
+            round(_bearing_diff(incoming, _bearing(graph, current, node)), 3),
             float(_edge_source(graph, current, node).get("length", 0.0) or 0.0),
         ),
     )
@@ -129,7 +146,7 @@ def _approach_point(
     v: int,
     distance_ft: float,
     closure_name: str,
-) -> tuple[float, float, list[int], str, str]:
+) -> tuple[float, float, list[int], str, str, float]:
     remaining_m = distance_ft * FT_TO_M
     current = u
     previous = v
@@ -138,7 +155,8 @@ def _approach_point(
         candidates = _approach_candidates(graph, current, previous, closure_name)
         if not candidates:
             lon, lat = _point_upstream(graph, u, v, distance_ft)
-            return lon, lat, path, "limited", "insufficient upstream graph path; projected from closure segment"
+            shortfall_ft = round(remaining_m * M_TO_FT, 1)
+            return lon, lat, path, "limited", "insufficient upstream graph path; projected from closure segment", shortfall_ft
         next_node = candidates[0]
         a = _xy(graph, current)
         b = _xy(graph, next_node)
@@ -146,14 +164,15 @@ def _approach_point(
         if remaining_m <= segment_m:
             x, y = _interpolate(a, b, remaining_m)
             lon, lat = _lonlat_from_xy(graph, x, y)
-            return lon, lat, [*path, next_node], "placed", ""
+            return lon, lat, [*path, next_node], "placed", "", 0.0
         remaining_m -= segment_m
         previous = current
         current = next_node
         path.append(current)
         if len(path) > 20:
             lon, lat = _point_upstream(graph, u, v, distance_ft)
-            return lon, lat, path, "limited", "approach path search limit reached"
+            shortfall_ft = round(remaining_m * M_TO_FT, 1)
+            return lon, lat, path, "limited", "approach path search limit reached", shortfall_ft
 
 
 def warning_sign_features(
@@ -184,7 +203,7 @@ def warning_sign_features(
                 cumulative += spacing[sequence]
                 if max_distance_ft is not None and cumulative > max_distance_ft:
                     continue
-                lon, lat, approach_path, placement_status, placement_warning = _approach_point(
+                lon, lat, approach_path, placement_status, placement_warning, shortfall_ft = _approach_point(
                     graph,
                     start,
                     previous,
@@ -217,6 +236,7 @@ def warning_sign_features(
                             "mutcd_spacing_source": "Table 6B-1",
                             "placement_status": placement_status,
                             "placement_warning": placement_warning,
+                            "shortfall_ft": shortfall_ft,
                             "approach_path": approach_path,
                             "advisory": True,
                             "confidence": "draft",

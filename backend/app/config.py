@@ -45,6 +45,30 @@ class SourceConfig:
 
 SOURCES = SourceConfig()
 
+
+@dataclass(frozen=True)
+class ScoringWeights:
+    """Weights for the normalized hydrant/hose-route score (lower is better).
+
+    Each scored term is normalized to roughly 0..1 before weighting so the
+    weights are unit-free and directly comparable. See
+    ``planner._hydrant_candidates``.
+    """
+
+    length: float = 1.0
+    curvature: float = 0.5
+    grade: float = 0.4
+    snap: float = 0.3
+    # Normalization references.
+    max_grade: float = 0.15  # ~15% grade treated as the practical worst case
+
+
+SCORING_WEIGHTS = ScoringWeights()
+
+# Fraction of the study radius beyond which nodes are treated as the outside
+# (perimeter) traffic source for the closure min-cut.
+PERIMETER_FRACTION = 0.75
+
 MANUAL_HYDRANTS_CSV = MANUAL_DIR / "manual_hydrants.csv"
 SCENARIOS_CSV = SCENARIO_DIR / "incidents.csv"
 AUTHORITATIVE_HYDRANTS_GEOJSON = GENERATED_DIR / "authoritative_hydrants.geojson"
