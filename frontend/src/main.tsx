@@ -26,7 +26,7 @@ import "./styles.css";
 import { formatCoords } from "./format";
 import { MapView } from "./mapView";
 import { API, jsonFetch } from "./api";
-import { fetchCachedLayer } from "./layerCache";
+import { fetchCachedLayerMeta } from "./layerCache";
 import { closureCsv, downloadCsv, openPrintableReport, signAndDeviceCsv } from "./export";
 import { filterPlanResources, resourceTotals, type ResourceCounts, type ResourceType } from "./resourcePriority";
 import type {
@@ -200,19 +200,34 @@ function App() {
     // (manual hydrants, scenarios, runs) are always fetched fresh because they
     // change as the user edits them and loadLayers() is re-run after mutations.
     // `forceRefresh` bypasses the cache (used right after a rebuild).
-    const [roadLayer, hydrantLayer, manual, scenarioRecords, runRecords] = await Promise.all([
-      fetchCachedLayer<FeatureCollection>(`${API}/layers/roads`, undefined, { force: forceRefresh }),
-      fetchCachedLayer<FeatureCollection>(`${API}/layers/hydrants`, undefined, { force: forceRefresh }),
+    const [roadRes, hydrantRes, manual, scenarioRecords, runRecords] = await Promise.all([
+      fetchCachedLayerMeta<FeatureCollection>(`${API}/layers/roads`, undefined, { force: forceRefresh }),
+      fetchCachedLayerMeta<FeatureCollection>(`${API}/layers/hydrants`, undefined, { force: forceRefresh }),
       jsonFetch<ManualHydrant[]>(`${API}/manual-hydrants`),
       jsonFetch<Scenario[]>(`${API}/scenarios`),
       jsonFetch<ScenarioRunListItem[]>(`${API}/scenario-runs`).catch(() => []),
     ]);
+    const roadLayer = roadRes.data;
+    const hydrantLayer = hydrantRes.data;
     setRoads(roadLayer);
     setHydrants(hydrantLayer);
     setManualHydrants(manual);
     setScenarios(scenarioRecords);
     setScenarioRuns(runRecords);
-    const loadedMessage = `${roadLayer.features.length} roads, ${hydrantLayer.features.length} hydrants, ${manual.length} manual hydrants, ${scenarioRecords.length} scenarios loaded.`;
+    // Note which large layers came from the IndexedDB cache (and how old it is)
+    // so the load-status toast makes clear data was not freshly downloaded.
+    const cached = [
+      roadRes.fromCache ? { name: "roads", at: roadRes.fetchedAt } : null,
+      hydrantRes.fromCache ? { name: "hydrants", at: hydrantRes.fetchedAt } : null,
+    ].filter((entry): entry is { name: string; at: number | null } => entry !== null);
+    let cacheNote = "";
+    if (cached.length) {
+      const oldest = Math.min(...cached.map((entry) => entry.at ?? Date.now()));
+      const ageMin = Math.max(0, Math.round((Date.now() - oldest) / 60000));
+      const age = ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin / 60)}h`;
+      cacheNote = ` · ${cached.map((entry) => entry.name).join(" & ")} from cache (updated ${age} ago)`;
+    }
+    const loadedMessage = `${roadLayer.features.length} roads, ${hydrantLayer.features.length} hydrants, ${manual.length} manual hydrants, ${scenarioRecords.length} scenarios loaded.${cacheNote}`;
     setLoadToast(loadedMessage);
     setMessage(loadedMessage);
     window.setTimeout(() => setLoadToast(""), 4500);

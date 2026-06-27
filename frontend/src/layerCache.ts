@@ -64,23 +64,29 @@ async function writeEntry<T>(key: string, data: T): Promise<void> {
   }
 }
 
-// Fetch a layer with an IndexedDB-backed cache keyed by `url`.
+// Result of a cached layer fetch, including whether it was served from the
+// IndexedDB cache and when that cached copy was stored (so the UI can report it).
+export type CachedLayerResult<T> = { data: T; fromCache: boolean; fetchedAt: number | null };
+
+// Fetch a layer with an IndexedDB-backed cache keyed by `url`, returning cache
+// metadata alongside the data.
 // - If a cached entry exists and is younger than LAYER_CACHE_TTL_MS, return it
-//   immediately and skip the network fetch.
-// - Otherwise (missing or stale) fetch fresh and update the cache.
+//   immediately (fromCache: true) and skip the network fetch.
+// - Otherwise (missing or stale) fetch fresh, update the cache, and return
+//   fromCache: false.
 // - Pass { force: true } to bypass the cache read and re-fetch (used right after
 //   a layer rebuild, so freshly built data is not masked by a recent cache entry).
 // - Any IndexedDB error is swallowed and we fall back to a plain fetch.
-export async function fetchCachedLayer<T>(
+export async function fetchCachedLayerMeta<T>(
   url: string,
   init?: RequestInit,
   options?: { force?: boolean },
-): Promise<T> {
+): Promise<CachedLayerResult<T>> {
   if (!options?.force) {
     try {
       const entry = await readEntry<T>(url);
       if (entry && Date.now() - entry.fetchedAt < LAYER_CACHE_TTL_MS) {
-        return entry.data;
+        return { data: entry.data, fromCache: true, fetchedAt: entry.fetchedAt };
       }
     } catch {
       // Cache read failed (e.g. IndexedDB unavailable); fall through to network.
@@ -95,5 +101,14 @@ export async function fetchCachedLayer<T>(
     // Cache write failed; the fetched data is still returned normally.
   }
 
-  return data;
+  return { data, fromCache: false, fetchedAt: Date.now() };
+}
+
+// Convenience wrapper returning only the data (when cache status is not needed).
+export async function fetchCachedLayer<T>(
+  url: string,
+  init?: RequestInit,
+  options?: { force?: boolean },
+): Promise<T> {
+  return (await fetchCachedLayerMeta<T>(url, init, options)).data;
 }
