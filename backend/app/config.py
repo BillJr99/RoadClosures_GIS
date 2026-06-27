@@ -94,9 +94,11 @@ class ScoringWeights:
     """
 
     length: float = 1.0
-    curvature: float = 0.5
+    # Curvature is weighted as heavily as length so a straighter hose run is
+    # preferred even when it is somewhat longer: a farther but straight hydrant
+    # beats a closer one reached only through sharp turns.
+    curvature: float = 1.0
     grade: float = 0.4
-    snap: float = 0.3
     # Normalization references.
     max_grade: float = 0.15  # ~15% grade treated as the practical worst case
 

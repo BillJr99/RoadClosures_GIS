@@ -29,6 +29,15 @@ INF_CAP = 1_000_000.0
 SUPER_SOURCE = "__EXTERNAL__"
 SUPER_SINK = "__INCIDENT__"
 
+# How close (ft) the incident must snap to the configured GraphML artifact for
+# that artifact to be used. This is a DATA-COVERAGE check ("is the incident on a
+# road in this map?"), independent of hose reach: a small single-municipality
+# artifact must not be used for incidents outside its coverage, where the
+# incident snaps hundreds of feet away and every hydrant then fails. Roads in
+# developed areas are typically well under this apart, so a true in-coverage
+# incident snaps far closer than this.
+CONFIGURED_GRAPH_SNAP_TOLERANCE_FT = 300.0
+
 
 ROAD_CLASS_COST = {
     "motorway": 12.0,
@@ -72,8 +81,13 @@ def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, A
         graph = ox.load_graphml(ROAD_GRAPH_GRAPHML)
         graph = enrich_graph_with_county_roads(graph)
         snap_m = _graph_point_snap_distance_m(graph, req.lon, req.lat)
-        max_snap_m = max(req.study_radius_ft * FT_TO_M, 1000.0 * FT_TO_M)
-        if snap_m <= max_snap_m:
+        # Only use the configured GraphML when the incident actually snaps onto a
+        # road in it. The old threshold (study radius, ~2500 ft) let a small
+        # artifact (e.g. a single-municipality graph) be used for incidents far
+        # outside its coverage, where the incident node is hundreds of feet away.
+        # This is a data-coverage check (not a hose-reach limit), so out-of-coverage
+        # incidents fall through to a prebuilt tile or a freshly fetched local graph.
+        if snap_m <= CONFIGURED_GRAPH_SNAP_TOLERANCE_FT * FT_TO_M:
             return graph, {
                 "cache_hit": False,
                 "cache_key": None,
@@ -268,25 +282,24 @@ def _hydrant_score(
     max_m: float,
     curvature: float,
     max_grade: float,
-    hydrant_snap_m: float,
-    max_snap_m: float,
 ) -> tuple[float, dict[str, float]]:
     """Composite hydrant/hose score (lower is better) from normalized terms.
 
-    Each term is normalized to ~0..1 against a sensible reference so the
+    Only hydrants whose full hose run (road path plus the off-road gaps at each
+    end) fits within the hose envelope are scored; this picks the best among
+    them. Each term is normalized to ~0..1 against a sensible reference so the
     weights in ``SCORING_WEIGHTS`` are unit-free and comparable, instead of
-    mixing raw meters with radians on one additive scale.
+    mixing raw meters with radians on one additive scale. The off-road snap gaps
+    are already part of ``length_m``, so they are not scored separately.
     """
     w = SCORING_WEIGHTS
     n_length = length_m / max_m if max_m else 0.0
     n_curvature = curvature / math.pi
     n_grade = (abs(max_grade) / w.max_grade) if w.max_grade else 0.0
-    n_snap = hydrant_snap_m / max_snap_m if max_snap_m else 0.0
     breakdown = {
         "length": round(w.length * n_length, 4),
         "curvature": round(w.curvature * n_curvature, 4),
         "grade": round(w.grade * n_grade, 4),
-        "snap": round(w.snap * n_snap, 4),
     }
     return sum(breakdown.values()), breakdown
 
@@ -319,16 +332,13 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
     max_m = req.hose_max_ft * FT_TO_M
     incident_x, incident_y = _incident_xy(graph, req)
     incident_snap_m = _node_distance_m(graph, fire_node, incident_x, incident_y)
-    max_snap_m = min(250.0 * FT_TO_M, max_m * 0.5)
     if debug is not None:
         debug["hydrant_filter"] = {
             "hose_max_ft": req.hose_max_ft,
-            "max_snap_ft": round(max_snap_m * M_TO_FT, 1),
             "incident_snap_ft": round(incident_snap_m * M_TO_FT, 1),
             "total_features": 0,
             "accepted": 0,
             "rejected_direct_distance": 0,
-            "rejected_snap_distance": 0,
             "rejected_route_length": 0,
             "rejected_no_path": 0,
             "rejected_non_point": 0,
@@ -372,12 +382,12 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
         direct_distance_m = math.hypot(hydrant_x - incident_x, hydrant_y - incident_y)
         try:
             hydrant_snap_m = _node_distance_m(graph, hydrant_node, hydrant_x, hydrant_y)
-            if hydrant_snap_m > max_snap_m or incident_snap_m > max_snap_m:
-                if debug is not None:
-                    debug["hydrant_filter"]["rejected_snap_distance"] += 1
-                continue
             path = nx.shortest_path(graph, hydrant_node, fire_node, weight="length")
             graph_length_m = _path_length(graph, path)
+            # Full hose run = road path + the off-road gap at each end (hydrant
+            # to road, road to incident). The hose envelope is the ONLY distance
+            # limit (no separate hard-coded snap cap): a hydrant is reachable iff
+            # this total fits within the configurable hose_max_ft.
             length_m = graph_length_m + hydrant_snap_m + incident_snap_m
         except Exception:
             if debug is not None:
@@ -390,7 +400,7 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
         curvature = _path_curvature(graph, path)
         elev_change = _path_elevation_change(graph, path)
         max_grade = path_max_grade(graph, path)
-        score, breakdown = _hydrant_score(length_m, max_m, curvature, max_grade, hydrant_snap_m, max_snap_m)
+        score, breakdown = _hydrant_score(length_m, max_m, curvature, max_grade)
         candidates.append(
             HydrantCandidate(
                 feature,
