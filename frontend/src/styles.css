@@ -477,7 +477,7 @@ button.primary {
 }
 
 .legend-swatch.barricade {
-  background: #ef4444;
+  background: #db2777;
 }
 
 .legend-swatch.device {
@@ -488,6 +488,6 @@ button.primary {
   background: #0969da;
 }
 
-.legend-line.closure {
+.legend-line.closure-line {
   background: #dc2626;
 }

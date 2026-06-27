@@ -209,7 +209,7 @@ export function MapView({
             data={displayDevices}
             pointToLayer={(feature, latlng) =>
               feature.properties?.kind === "barricade"
-                ? L.circleMarker(latlng, { radius: 7, color: "#b91c1c", fillColor: "#ef4444", fillOpacity: 0.95, weight: 2 })
+                ? L.circleMarker(latlng, { radius: 7, color: "#9d174d", fillColor: "#db2777", fillOpacity: 0.95, weight: 2 })
                 : L.circleMarker(latlng, { radius: 4, color: "#c2410c", fillColor: "#f97316", fillOpacity: 0.9, weight: 1 })
             }
             onEachFeature={(feature, layer) =>
@@ -278,7 +278,7 @@ export function MapView({
           <span><i className="legend-swatch hydrant" /> Hydrant</span>
           <span><i className="legend-swatch selected-hydrant" /> Selected hydrant</span>
           <span><i className="legend-line hose" /> Hose path</span>
-          <span><i className="legend-line closure" /> Closure</span>
+          <span><i className="legend-line closure-line" /> Closure</span>
           <span><i className="legend-swatch sign" /> Sign</span>
           <span><i className="legend-swatch barricade" /> Barricade</span>
           <span><i className="legend-swatch device" /> Channelizing device</span>
