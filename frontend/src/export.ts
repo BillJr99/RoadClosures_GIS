@@ -138,6 +138,13 @@ function incidentMapSection(plan: PlanResponse, incident: Incident | null): stri
   <div id="report-map" style="width:640px;max-width:100%;height:420px;border:1px solid #cbd2d9;border-radius:6px;overflow:hidden;">
     <noscript><img src="${staticImg}" width="640" height="420" alt="Incident area map" /></noscript>
   </div>
+  <div class="report-map-legend" style="display:flex;flex-wrap:wrap;gap:14px;margin:8px 0 4px;font-size:12px;color:#334e68;width:640px;max-width:100%;">
+    <span style="display:flex;align-items:center;gap:6px;"><i style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#c83525;"></i>Incident</span>
+    <span style="display:flex;align-items:center;gap:6px;"><i style="display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid #38bdf8;background:rgba(56,189,248,0.2);box-sizing:border-box;"></i>Selected hydrant</span>
+    <span style="display:flex;align-items:center;gap:6px;"><i style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#0969da;"></i>Hose path</span>
+    <span style="display:flex;align-items:center;gap:6px;"><i style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#dc2626;"></i>Closure</span>
+    <span style="display:flex;align-items:center;gap:6px;"><i style="display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid #7c3aed;background:#a855f7;box-sizing:border-box;"></i>Sign</span>
+  </div>
   <script>
   (function () {
     var DATA = ${embedJson(data)};
