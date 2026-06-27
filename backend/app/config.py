@@ -1,7 +1,37 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+
+
+# Default CORS origins: the local dev/preview frontend on localhost:5173.
+DEFAULT_CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+def cors_allow_origins() -> list[str]:
+    """Browser origins the API accepts cross-origin requests from.
+
+    Configured by the ``CORS_ALLOW_ORIGINS`` environment variable:
+
+    - **unset/empty** -> the localhost default (local development), which is the
+      assumed setup.
+    - **``*``** -> all sources.
+    - a comma-separated list of origins -> those exact origins, UNLESS any of them
+      is non-localhost (i.e. a real deployment elsewhere), in which case CORS is
+      opened to all sources so the frontend can be served from anywhere.
+    """
+    raw = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
+    if not raw:
+        return list(DEFAULT_CORS_ORIGINS)
+    if raw == "*":
+        return ["*"]
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if not origins:
+        return list(DEFAULT_CORS_ORIGINS)
+    if any("localhost" not in origin and "127.0.0.1" not in origin for origin in origins):
+        return ["*"]
+    return origins
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

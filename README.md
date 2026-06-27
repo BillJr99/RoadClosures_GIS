@@ -80,6 +80,44 @@ npm install
 The frontend defaults to `http://localhost:8001/api`. Override it with
 `VITE_API_BASE` if you run the backend elsewhere.
 
+### Configuring server locations (non-localhost deployments)
+
+Both sides assume `localhost` by default but are configurable for deployment.
+
+**Frontend API base — `VITE_API_BASE`.** The frontend reads
+`import.meta.env.VITE_API_BASE` (see `frontend/src/api.ts`), defaulting to
+`http://localhost:8001/api`. This is **baked in at build time** (Vite inlines the
+value during `npm run build`/`npm run dev`), so set it *before* building the bundle
+you deploy — editing the served files afterward will not change it. A
+`frontend/.env.example` documents it; copy it to `frontend/.env` (or
+`.env.production`) and set the value, or pass it inline:
+
+```bash
+VITE_API_BASE=https://gis.example.org/api npm run build
+```
+
+**Backend CORS — `CORS_ALLOW_ORIGINS`.** The backend only accepts cross-origin
+browser requests from allowed origins (`cors_allow_origins()` in
+`backend/app/config.py`). Behavior:
+
+- **unset (default):** localhost only — `http://localhost:5173` and
+  `http://127.0.0.1:5173` (the assumed local setup).
+- **`*`:** all sources.
+- **a comma-separated list of origins:** those exact origins are allowed — *unless*
+  any of them is non-localhost (a real deployment elsewhere), in which case CORS is
+  opened to **all sources** so the frontend can be served from anywhere without
+  enumerating its exact origin.
+
+```bash
+# Local default — nothing to set.
+# Deploy elsewhere: any non-localhost origin opens CORS to all sources.
+CORS_ALLOW_ORIGINS=https://gis.example.org uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
+
+When CORS is opened to all sources, credentialed requests are disabled
+automatically (the CORS spec forbids `*` with credentials; the frontend uses plain
+fetches, so this is fine).
+
 ## Rebuilding GIS Data
 
 Generated road and hydrant artifacts live under `data/generated/` and are
