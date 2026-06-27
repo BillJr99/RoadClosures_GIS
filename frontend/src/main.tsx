@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
   Check,
+  DownloadCloud,
   Droplets,
   FileCheck2,
   FileText,
@@ -135,6 +136,7 @@ function App() {
   const [planVersion, setPlanVersion] = useState(0);
   const [isPlanning, setIsPlanning] = useState(false);
   const [buildBusy, setBuildBusy] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
   const [pendingIncidentRemove, setPendingIncidentRemove] = useState(false);
   const [scenarioRun, setScenarioRun] = useState<ScenarioRunResult | null>(null);
   const [scenarioRuns, setScenarioRuns] = useState<ScenarioRunListItem[]>([]);
@@ -148,6 +150,9 @@ function App() {
   const [goldenStatus, setGoldenStatus] = useState("");
   const [showInactiveScenarios, setShowInactiveScenarios] = useState(false);
   const [showConfiguration, setShowConfiguration] = useState(false);
+  const [showScenarios, setShowScenarios] = useState(false);
+  const [showScenarioRuns, setShowScenarioRuns] = useState(false);
+  const [showManualHydrants, setShowManualHydrants] = useState(false);
   const [message, setMessage] = useState("Pick an incident or load a scenario.");
   const [loadToast, setLoadToast] = useState("Loading GIS data in the background...");
   const [manualDraft, setManualDraft] = useState({
@@ -186,6 +191,7 @@ function App() {
   // type; the rest are hidden. Once the user adjusts a stepper, `touched` stays
   // true so subsequent plans never wipe their specified availability.
   const [resourceCounts, setResourceCounts] = useState<ResourceCounts>({
+    closures: 0,
     barricades: 0,
     channelizing: 0,
     signs: 0,
@@ -195,7 +201,7 @@ function App() {
   async function loadLayers(forceRefresh = false) {
     setLoadToast("Loading GIS data in the background...");
     // Roads and hydrants are large, mostly-static layers, so they are served
-    // from the IndexedDB cache when a recent (<24h) copy exists and only
+    // from the IndexedDB cache when a recent (<7-day) copy exists and only
     // re-downloaded when missing or stale. The dynamic records below
     // (manual hydrants, scenarios, runs) are always fetched fresh because they
     // change as the user edits them and loadLayers() is re-run after mutations.
@@ -231,6 +237,24 @@ function App() {
     setLoadToast(loadedMessage);
     setMessage(loadedMessage);
     window.setTimeout(() => setLoadToast(""), 4500);
+  }
+
+  // Force a fresh network re-download of the roads + hydrants layers, bypassing
+  // and overwriting the IndexedDB cache. Unlike the cache-aware "Reload Layers"
+  // button (loadLayers()), this always hits the network so the user can pull the
+  // latest GIS data on demand.
+  async function refreshCachedLayers() {
+    if (refreshBusy) return;
+    setRefreshBusy(true);
+    try {
+      await loadLayers(true);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setMessage(`Layer re-download failed: ${detail}`);
+      setLoadToast(`Layer re-download failed: ${detail}`);
+    } finally {
+      setRefreshBusy(false);
+    }
   }
 
   async function loadScenarios() {
@@ -358,12 +382,20 @@ function App() {
   }
 
   function addSecondaryIncident(nextIncident: Incident) {
-    setSecondaryIncidents((items) => [...items, nextIncident]);
     setSecondaryIncidentMode(false);
     setManualHydrantPickMode(false);
-    setPlan(null);
-    setPlannerStatus("Secondary incident placed. Run recommendations again.");
-    setMessage("Secondary incident placed. Run recommendations again.");
+    const updatedSecondaries = [...secondaryIncidents, nextIncident];
+    setSecondaryIncidents(updatedSecondaries);
+    if (incident) {
+      // Auto re-run the plan across the primary plus all secondary incidents so
+      // closures/resources cover every incident without a manual "run again".
+      setPlannerStatus("Secondary incident placed. Recommending closures for all incidents...");
+      setMessage("Secondary incident placed. Recommending closures for all incidents...");
+      void runPlan(hydrantCount, updatedSecondaries);
+    } else {
+      setPlannerStatus("Place a primary incident before running recommendations.");
+      setMessage("Place a primary incident before running recommendations.");
+    }
   }
 
   function requestIncidentRemoval() {
@@ -830,7 +862,9 @@ function App() {
     if (!plan) return null;
     const nonPointFeatures = plan.overlays.features.filter((feature) => feature.geometry.type !== "Point");
     const hoseFeatures = plan.hose_routes?.features.length ? plan.hose_routes.features : plan.hose_route ? [plan.hose_route] : [];
-    const closureFeatures = plan.closures.features.length ? plan.closures.features : [];
+    // Use the closure-capped (and cascade-filtered) closures so removed closures
+    // disappear from the map along with their signs/devices/barricades.
+    const closureFeatures = filteredPlanResources.closures?.features ?? [];
     const isHose = (feature: GeoJSON.Feature) => feature.properties?.kind === "hose_route";
     const isClosure = (feature: GeoJSON.Feature) => {
       const kind = feature.properties?.kind;
@@ -845,7 +879,7 @@ function App() {
       closures: { ...plan.overlays, features: selectedClosureFeatures.map((feature) => offsetLineFeature(feature, -0.000025)) },
       other: { ...plan.overlays, features: nonPointFeatures.filter((feature) => !isHose(feature) && !isClosure(feature)) },
     };
-  }, [plan]);
+  }, [plan, filteredPlanResources]);
   const selectedHydrantFeatures = plan?.selected_hydrants?.features.length
     ? plan.selected_hydrants.features
     : plan?.selected_hydrant
@@ -961,6 +995,130 @@ function App() {
     );
   };
 
+  // Plan Review is rendered above the Manual Hydrants panel whenever a plan
+  // exists; when there is no plan it renders nothing and Manual Hydrants keeps
+  // its original position.
+  const planReviewSection = plan && (
+    <section className="panel">
+      <h2>Plan Review</h2>
+      {plan.feasible === false && (
+        <div className="explain-box warning" role="alert">
+          <strong>Closure isolation not feasible</strong>
+          <span>{String(plan.feasibility_note || "No finite closure set isolates the incident.")}</span>
+        </div>
+      )}
+      {planMeaning && (
+        <div className="explain-box">
+          <strong>Recommendation summary</strong>
+          <span>{planMeaning.closureText}</span>
+          <span>{planMeaning.signText}</span>
+          <span>{planMeaning.nextStep}</span>
+        </div>
+      )}
+      <div className="inline">
+        <button onClick={addHydrantAndRerun} disabled={!incident || isPlanning || hydrantCount >= 4}>
+          <Droplets size={18} /> Add Hydrant
+        </button>
+        <button
+          onClick={() => {
+            setSecondaryIncidentMode(true);
+            setMessage("Click the map to place a secondary incident.");
+            setLoadToast("Click the map to place a secondary incident.");
+          }}
+          disabled={!incident || isPlanning}
+        >
+          <MapPin size={18} /> Add Secondary Incident
+        </button>
+      </div>
+      <div className="coords">
+        Hydrants requested: {hydrantCount} · secondary incidents: {secondaryIncidents.length}
+        {secondaryIncidentMode ? " · click map to place secondary incident" : ""}
+      </div>
+      <div className="scenario-result">
+        <strong>Selected hydrant</strong>
+        <span>{String(selectedHydrantProps.name || selectedHydrantProps.source || "Hydrant")} · {selectedHydrant ? formatCoords(selectedHydrant.lat, selectedHydrant.lon) : ""}</span>
+        <span>Hose {String(hoseProps.length_ft ?? "n/a")} ft · curvature {String(hoseProps.curvature ?? "n/a")} · elevation {String(hoseProps.elevation_change_ft ?? "n/a")} ft · max grade {String(hoseProps.max_grade ?? "n/a")}</span>
+        <span>Map: incident pin in red, recommended hydrant marker, hose path in blue, closures in red, advisory signs in purple.</span>
+        {plan.graph_source && <span>Graph: {String(plan.graph_source.source ?? "graph")} · cache {String(plan.graph_source.cache_hit)}</span>}
+        {hydrantBreakdown && (
+          <span title="Why this hydrant scored best (lower is better, normalized contributions)">
+            Why chosen: length {String(hydrantBreakdown.length ?? 0)} · curvature {String(hydrantBreakdown.curvature ?? 0)} · grade {String(hydrantBreakdown.grade ?? 0)} · snap {String(hydrantBreakdown.snap ?? 0)}
+          </span>
+        )}
+      </div>
+      <h2>Closure Ranking</h2>
+      <div className="list">
+        {plan.ranked_closures.length === 0 && (
+          <div className="empty-state">No closure recommendations returned for this incident.</div>
+        )}
+        {plan.ranked_closures.map((closure, index) => (
+          <div className="closure" key={index}>
+            <strong>
+              {Boolean(closure.deployment_label) && (
+                <span className="priority-badge" title="Field set-up priority (set up first)">{String(closure.deployment_label)}</span>
+              )}
+              #{String(closure.rank)} {String(closure.name)}
+            </strong>
+            <span>{String(closure.reason)}</span>
+            <span>Cost {String(closure.capacity)} · {String(closure.sightline)}</span>
+            {Boolean(closure.county_st_name) && <span>County match: {String(closure.county_st_name)} ({String(closure.county_match_confidence)})</span>}
+            {Boolean(closure.abs_grade) && <span>Grade {String(closure.abs_grade)} · elevation change {String(closure.elevation_change_m)} m</span>}
+          </div>
+        ))}
+      </div>
+      {plan.warning_signs && (
+        <div className="scenario-result">
+          <strong><Flag size={16} /> MUTCD advisory signs</strong>
+          <span>
+            {plan.warning_signs.features.length > 0
+              ? `${plan.warning_signs.features.length} candidate sign location(s)`
+              : "No advisory sign locations returned."}
+          </span>
+          {plan.warning_signs.features.slice(0, 6).map((feature, index) => (
+            <span key={index}>
+              {Boolean(feature.properties?.deployment_label) && (
+                <span className="priority-badge" title="Field set-up priority (set up first)">{String(feature.properties?.deployment_label)}</span>
+              )}
+              {String(feature.properties?.mutcd_sign_code)} · {String(feature.properties?.approach_road)} · {String(feature.properties?.distance_from_closure_ft)} ft · {String(feature.properties?.placement_status)}
+            </span>
+          ))}
+          {plan.compliance && (
+            <span>
+              Approach coverage: {String(plan.compliance.approach_sides_covered)}/{String(plan.compliance.approach_sides_total)} sides
+              {Number(plan.compliance.approach_sides_uncovered) > 0 ? ` · ${String(plan.compliance.approach_sides_uncovered)} need review` : " · all covered"}
+            </span>
+          )}
+          {plan.devices && (
+            <span>
+              Devices: {plan.devices.features.filter((f) => f.properties?.kind === "barricade").length} barricade(s) · {plan.devices.features.filter((f) => f.properties?.kind === "channelizing_device").length} channelizing device(s)
+            </span>
+          )}
+        </div>
+      )}
+      <div className="scenario-result">
+        <strong><FileCheck2 size={16} /> Field deployment exports</strong>
+        <span>Lists are ordered by deployment priority (P1 = set up first).</span>
+        <div className="inline">
+          <button
+            title="Download signs and devices CSV"
+            onClick={() => downloadCsv(`plan-signs-devices-${plan.run_id ?? "adhoc"}.csv`, signAndDeviceCsv(plan))}
+          >
+            Signs & devices CSV
+          </button>
+          <button
+            title="Download closures CSV"
+            onClick={() => downloadCsv(`plan-closures-${plan.run_id ?? "adhoc"}.csv`, closureCsv(plan))}
+          >
+            Closures CSV
+          </button>
+          <button title="Open a printable plan report" onClick={() => openPrintableReport(plan, incident)}>
+            Print report
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -1036,8 +1194,9 @@ function App() {
               <div className="subsection resource-availability">
                 <h3><SlidersHorizontal size={16} /> Resource availability</h3>
                 <span className="resource-help">
-                  Set how many of each resource you have. Lower the count to hide the lowest-priority units; the map updates live.
+                  Set how many of each resource you have. Lower the count to hide the lowest-priority units; the map updates live. Capping road closures also frees the signs, barricades, and devices tied to the dropped closures.
                 </span>
+                {renderResourceControl("closures", "Road closures")}
                 {renderResourceControl("barricades", "Barricades")}
                 {renderResourceControl("channelizing", "Channelizing devices")}
                 {renderResourceControl("signs", "Signs")}
@@ -1046,8 +1205,19 @@ function App() {
           )}
         </section>
 
+        {planReviewSection}
+
         <section className="panel">
-          <h2><Droplets size={18} /> Manual Hydrants</h2>
+          <button
+            className="tree-toggle"
+            onClick={() => setShowManualHydrants((show) => !show)}
+            aria-expanded={showManualHydrants}
+          >
+            {showManualHydrants ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            <Droplets size={18} /> Add Manual Hydrants
+          </button>
+          {showManualHydrants && (
+          <>
           <label className="field">
             <span>Name</span>
             <input value={manualDraft.name} onChange={(e) => setManualDraft({ ...manualDraft, name: e.target.value })} placeholder="Known hydrant" />
@@ -1103,10 +1273,21 @@ function App() {
               </div>
             ))}
           </div>
+          </>
+          )}
         </section>
 
         <section className="panel">
-          <h2><FileCheck2 size={18} /> Scenarios</h2>
+          <button
+            className="tree-toggle"
+            onClick={() => setShowScenarios((show) => !show)}
+            aria-expanded={showScenarios}
+          >
+            {showScenarios ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            <FileCheck2 size={18} /> Scenarios
+          </button>
+          {showScenarios && (
+          <>
           <label className="field">
             <span>Scenario name</span>
             <input
@@ -1297,10 +1478,21 @@ function App() {
           </div>
           {scenarioStatus && <div className="inline-status">{scenarioStatus}</div>}
           {lastRunSource === "scenario" && renderRunBox(scenarioRun, "Scenario run")}
+          </>
+          )}
         </section>
 
         <section className="panel">
-          <h2><FileCheck2 size={18} /> Scenario Runs</h2>
+          <button
+            className="tree-toggle"
+            onClick={() => setShowScenarioRuns((show) => !show)}
+            aria-expanded={showScenarioRuns}
+          >
+            {showScenarioRuns ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            <FileCheck2 size={18} /> Scenario Runs
+          </button>
+          {showScenarioRuns && (
+          <>
           <button onClick={loadScenarioRuns}>Reload Runs</button>
           <div className="list">
             {scenarioRuns.map((run) => (
@@ -1339,136 +1531,33 @@ function App() {
               </div>
             ))}
           </div>
+          </>
+          )}
         </section>
 
         <section className="panel">
           <h2><Route size={18} /> Layers</h2>
-          <button onClick={() => loadLayers()}>Reload Layers</button>
-          <button onClick={buildLayers} disabled={buildBusy}>
-            {buildBusy ? "Building…" : "Build From Sources"}
+          <button
+            onClick={() => loadLayers()}
+            title="Re-fetch the map layers, scenarios, and runs from the server. Roads/hydrants come from the local browser cache if a recent copy exists."
+          >
+            Refresh Layers
+          </button>
+          <button
+            onClick={refreshCachedLayers}
+            disabled={refreshBusy}
+            title="Force a fresh re-download of the road and hydrant layers from the server, replacing the local browser cache."
+          >
+            <DownloadCloud size={18} /> {refreshBusy ? "Updating…" : "Update Cache"}
+          </button>
+          <button
+            onClick={buildLayers}
+            disabled={buildBusy}
+            title="Regenerate the road, hydrant, and routing-graph data on the server from the upstream sources (OSM + county layers). Heavy/slow."
+          >
+            {buildBusy ? "Rebuilding…" : "Rebuild GIS Data"}
           </button>
         </section>
-
-        {plan && (
-          <section className="panel">
-            <h2>Plan Review</h2>
-            {plan.feasible === false && (
-              <div className="explain-box warning" role="alert">
-                <strong>Closure isolation not feasible</strong>
-                <span>{String(plan.feasibility_note || "No finite closure set isolates the incident.")}</span>
-              </div>
-            )}
-            {planMeaning && (
-              <div className="explain-box">
-                <strong>Recommendation summary</strong>
-                <span>{planMeaning.closureText}</span>
-                <span>{planMeaning.signText}</span>
-                <span>{planMeaning.nextStep}</span>
-              </div>
-            )}
-            <div className="inline">
-              <button onClick={addHydrantAndRerun} disabled={!incident || isPlanning || hydrantCount >= 4}>
-                <Droplets size={18} /> Add Hydrant
-              </button>
-              <button
-                onClick={() => {
-                  setSecondaryIncidentMode(true);
-                  setMessage("Click the map to place a secondary incident.");
-                  setLoadToast("Click the map to place a secondary incident.");
-                }}
-                disabled={!incident || isPlanning}
-              >
-                <MapPin size={18} /> Add Secondary Incident
-              </button>
-            </div>
-            <div className="coords">
-              Hydrants requested: {hydrantCount} · secondary incidents: {secondaryIncidents.length}
-              {secondaryIncidentMode ? " · click map to place secondary incident" : ""}
-            </div>
-            <div className="scenario-result">
-              <strong>Selected hydrant</strong>
-              <span>{String(selectedHydrantProps.name || selectedHydrantProps.source || "Hydrant")} · {selectedHydrant ? formatCoords(selectedHydrant.lat, selectedHydrant.lon) : ""}</span>
-              <span>Hose {String(hoseProps.length_ft ?? "n/a")} ft · curvature {String(hoseProps.curvature ?? "n/a")} · elevation {String(hoseProps.elevation_change_ft ?? "n/a")} ft · max grade {String(hoseProps.max_grade ?? "n/a")}</span>
-              <span>Map: incident pin in red, recommended hydrant marker, hose path in blue, closures in red, advisory signs in purple.</span>
-              {plan.graph_source && <span>Graph: {String(plan.graph_source.source ?? "graph")} · cache {String(plan.graph_source.cache_hit)}</span>}
-              {hydrantBreakdown && (
-                <span title="Why this hydrant scored best (lower is better, normalized contributions)">
-                  Why chosen: length {String(hydrantBreakdown.length ?? 0)} · curvature {String(hydrantBreakdown.curvature ?? 0)} · grade {String(hydrantBreakdown.grade ?? 0)} · snap {String(hydrantBreakdown.snap ?? 0)}
-                </span>
-              )}
-            </div>
-            <h2>Closure Ranking</h2>
-            <div className="list">
-              {plan.ranked_closures.length === 0 && (
-                <div className="empty-state">No closure recommendations returned for this incident.</div>
-              )}
-              {plan.ranked_closures.map((closure, index) => (
-                <div className="closure" key={index}>
-                  <strong>
-                    {Boolean(closure.deployment_label) && (
-                      <span className="priority-badge" title="Field set-up priority (set up first)">{String(closure.deployment_label)}</span>
-                    )}
-                    #{String(closure.rank)} {String(closure.name)}
-                  </strong>
-                  <span>{String(closure.reason)}</span>
-                  <span>Cost {String(closure.capacity)} · {String(closure.sightline)}</span>
-                  {Boolean(closure.county_st_name) && <span>County match: {String(closure.county_st_name)} ({String(closure.county_match_confidence)})</span>}
-                  {Boolean(closure.abs_grade) && <span>Grade {String(closure.abs_grade)} · elevation change {String(closure.elevation_change_m)} m</span>}
-                </div>
-              ))}
-            </div>
-            {plan.warning_signs && (
-              <div className="scenario-result">
-                <strong><Flag size={16} /> MUTCD advisory signs</strong>
-                <span>
-                  {plan.warning_signs.features.length > 0
-                    ? `${plan.warning_signs.features.length} candidate sign location(s)`
-                    : "No advisory sign locations returned."}
-                </span>
-                {plan.warning_signs.features.slice(0, 6).map((feature, index) => (
-                  <span key={index}>
-                    {Boolean(feature.properties?.deployment_label) && (
-                      <span className="priority-badge" title="Field set-up priority (set up first)">{String(feature.properties?.deployment_label)}</span>
-                    )}
-                    {String(feature.properties?.mutcd_sign_code)} · {String(feature.properties?.approach_road)} · {String(feature.properties?.distance_from_closure_ft)} ft · {String(feature.properties?.placement_status)}
-                  </span>
-                ))}
-                {plan.compliance && (
-                  <span>
-                    Approach coverage: {String(plan.compliance.approach_sides_covered)}/{String(plan.compliance.approach_sides_total)} sides
-                    {Number(plan.compliance.approach_sides_uncovered) > 0 ? ` · ${String(plan.compliance.approach_sides_uncovered)} need review` : " · all covered"}
-                  </span>
-                )}
-                {plan.devices && (
-                  <span>
-                    Devices: {plan.devices.features.filter((f) => f.properties?.kind === "barricade").length} barricade(s) · {plan.devices.features.filter((f) => f.properties?.kind === "channelizing_device").length} channelizing device(s)
-                  </span>
-                )}
-              </div>
-            )}
-            <div className="scenario-result">
-              <strong><FileCheck2 size={16} /> Field deployment exports</strong>
-              <span>Lists are ordered by deployment priority (P1 = set up first).</span>
-              <div className="inline">
-                <button
-                  title="Download signs and devices CSV"
-                  onClick={() => downloadCsv(`plan-signs-devices-${plan.run_id ?? "adhoc"}.csv`, signAndDeviceCsv(plan))}
-                >
-                  Signs & devices CSV
-                </button>
-                <button
-                  title="Download closures CSV"
-                  onClick={() => downloadCsv(`plan-closures-${plan.run_id ?? "adhoc"}.csv`, closureCsv(plan))}
-                >
-                  Closures CSV
-                </button>
-                <button title="Open a printable plan report" onClick={() => openPrintableReport(plan, incident)}>
-                  Print report
-                </button>
-              </div>
-            </div>
-          </section>
-        )}
       </aside>
 
       <MapView

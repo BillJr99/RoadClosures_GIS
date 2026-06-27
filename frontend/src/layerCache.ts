@@ -1,8 +1,16 @@
 import { jsonFetch } from "./api";
 
-// Hard 1-day expiration for cached layer data. After this window a cached
+// Hard 7-day expiration for cached layer data. After this window a cached
 // entry is considered stale and is re-fetched from the network.
-export const LAYER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+export const LAYER_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Pure freshness predicate: a cached entry stamped at `fetchedAt` is fresh while
+// it is younger than `ttl` relative to `now`. Exactly at the TTL boundary it is
+// considered stale (re-fetched). Extracted so it can be unit-tested without
+// IndexedDB.
+export function isFresh(fetchedAt: number, now: number, ttl: number = LAYER_CACHE_TTL_MS): boolean {
+  return now - fetchedAt < ttl;
+}
 
 // The large, mostly-static GIS layers (roads and especially the ~2MB hydrants
 // GeoJSON) are cached in IndexedDB so a hard refresh can reuse recently fetched
@@ -85,7 +93,7 @@ export async function fetchCachedLayerMeta<T>(
   if (!options?.force) {
     try {
       const entry = await readEntry<T>(url);
-      if (entry && Date.now() - entry.fetchedAt < LAYER_CACHE_TTL_MS) {
+      if (entry && isFresh(entry.fetchedAt, Date.now(), LAYER_CACHE_TTL_MS)) {
         return { data: entry.data, fromCache: true, fetchedAt: entry.fetchedAt };
       }
     } catch {

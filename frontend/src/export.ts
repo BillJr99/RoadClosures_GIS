@@ -81,6 +81,95 @@ function escapeHtml(value: unknown): string {
   return String(value ?? "").replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch] as string));
 }
 
+// Leaflet served from a CDN so the standalone printable report (opened in a
+// blank window via document.write) can render an OSM map without bundling
+// anything. Version pinned to match the app's leaflet dependency.
+const LEAFLET_CSS_URL = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+const LEAFLET_JS_URL = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+
+// JSON embedded inside an inline <script> must not contain a literal "</script>"
+// or a raw "<" that could prematurely close the tag, so escape "<".
+function embedJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+// Build the "Incident map" section: a ~640x420 Leaflet map using the same OSM
+// tiles as the main app, with the incident marker plus the hydrant, hose line,
+// closures, and signs drawn as GeoJSON overlays so the print matches the
+// on-screen map. Returns "" when there is no incident and no plottable plan
+// geometry. A <noscript> static-image fallback covers JS-disabled prints, and
+// the inline script falls back to the same static image if Leaflet fails.
+function incidentMapSection(plan: PlanResponse, incident: Incident | null): string {
+  const hoseFeatures = plan.hose_routes?.features?.length
+    ? plan.hose_routes.features
+    : plan.hose_route
+      ? [plan.hose_route]
+      : [];
+  const closureFeatures = plan.closures?.features ?? [];
+  const hydrantFeatures = plan.selected_hydrants?.features?.length
+    ? plan.selected_hydrants.features
+    : plan.selected_hydrant
+      ? [plan.selected_hydrant]
+      : [];
+  const signFeatures = plan.warning_signs?.features ?? [];
+
+  let center: [number, number] | null = incident ? [incident.lat, incident.lon] : null;
+  if (!center) {
+    const geom = hydrantFeatures[0]?.geometry;
+    if (geom?.type === "Point") {
+      const coords = geom.coordinates as [number, number];
+      center = [coords[1], coords[0]];
+    }
+  }
+  if (!center) return "";
+
+  const data = {
+    center,
+    incident: incident ? [incident.lat, incident.lon] : null,
+    hose: { type: "FeatureCollection", features: hoseFeatures },
+    closures: { type: "FeatureCollection", features: closureFeatures },
+    hydrants: { type: "FeatureCollection", features: hydrantFeatures },
+    signs: { type: "FeatureCollection", features: signFeatures },
+  };
+  const staticImg = `https://staticmap.openstreetmap.de/staticmap.php?center=${center[0]},${center[1]}&zoom=16&size=640x420&markers=${center[0]},${center[1]},red`;
+
+  return `
+  <h2>Incident map</h2>
+  <div id="report-map" style="width:640px;max-width:100%;height:420px;border:1px solid #cbd2d9;border-radius:6px;overflow:hidden;">
+    <noscript><img src="${staticImg}" width="640" height="420" alt="Incident area map" /></noscript>
+  </div>
+  <script>
+  (function () {
+    var DATA = ${embedJson(data)};
+    function fallback() {
+      var el = document.getElementById("report-map");
+      if (el) el.innerHTML = '<img src="${staticImg}" width="640" height="420" alt="Incident area map" />';
+    }
+    try {
+      if (!window.L) { fallback(); return; }
+      var map = L.map("report-map").setView(DATA.center, 16);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(map);
+      var bounds = L.latLngBounds([]);
+      function extend(layer) { try { var b = layer.getBounds(); if (b && b.isValid()) bounds.extend(b); } catch (e) {} }
+      if (DATA.closures.features.length) extend(L.geoJSON(DATA.closures, { style: { color: "#dc2626", weight: 5, opacity: 0.95 } }).addTo(map));
+      if (DATA.hose.features.length) extend(L.geoJSON(DATA.hose, { style: { color: "#0969da", weight: 5, opacity: 0.95 } }).addTo(map));
+      if (DATA.signs.features.length) extend(L.geoJSON(DATA.signs, { pointToLayer: function (f, ll) { return L.circleMarker(ll, { radius: 6, color: "#7c3aed", fillColor: "#a855f7", fillOpacity: 0.9, weight: 2 }); } }).addTo(map));
+      if (DATA.hydrants.features.length) extend(L.geoJSON(DATA.hydrants, { pointToLayer: function (f, ll) { return L.circleMarker(ll, { radius: 8, color: "#38bdf8", fillColor: "#38bdf8", fillOpacity: 0.2, weight: 4 }); } }).addTo(map));
+      if (DATA.incident) {
+        L.circleMarker(DATA.incident, { radius: 8, color: "#b42318", fillColor: "#c83525", fillOpacity: 0.9, weight: 3 }).addTo(map).bindTooltip("Incident");
+        bounds.extend(DATA.incident);
+      }
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24], maxZoom: 17 });
+      else map.setView(DATA.center, 16);
+      setTimeout(function () { map.invalidateSize(); }, 200);
+    } catch (e) { fallback(); }
+  })();
+  </script>`;
+}
+
 export function printableReportHtml(plan: PlanResponse, incident: Incident | null): string {
   const closureRows = plan.ranked_closures
     .map(
@@ -106,16 +195,20 @@ export function printableReportHtml(plan: PlanResponse, incident: Incident | nul
       )} sides.</p>`
     : "";
   return `<!doctype html><html><head><meta charset="utf-8"><title>Road Closure Plan</title>
+<link rel="stylesheet" href="${LEAFLET_CSS_URL}" />
+<script src="${LEAFLET_JS_URL}"></script>
 <style>
   body { font-family: system-ui, sans-serif; margin: 24px; color: #1f2933; }
   h1 { font-size: 18px; } h2 { font-size: 14px; margin-top: 20px; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   th, td { border: 1px solid #cbd2d9; padding: 4px 6px; text-align: left; }
+  #report-map { margin: 8px 0; }
   @media print { button { display: none; } }
 </style></head><body>
   <h1>Road Closure Deployment Plan</h1>
   <p>Incident: ${incident ? escapeHtml(formatCoords(incident.lat, incident.lon)) : "n/a"}</p>
   ${plan.feasible === false ? `<p><strong>Warning:</strong> ${escapeHtml(plan.feasibility_note)}</p>` : ""}
+  ${incidentMapSection(plan, incident)}
   ${compliance}
   <h2>Closures (by deployment priority)</h2>
   <table><thead><tr><th>Priority</th><th>Road</th><th>Sightline</th><th>Reason</th></tr></thead><tbody>${closureRows}</tbody></table>

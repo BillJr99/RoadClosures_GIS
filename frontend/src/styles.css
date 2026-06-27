@@ -493,3 +493,25 @@ button.primary {
 .legend-line.closure-line {
   background: #dc2626;
 }
+
+/* Permanent number label centered on each red incident dot (1 = primary, 2+ =
+   secondary incidents). Strip Leaflet's default tooltip chrome so only the
+   white number shows over the dot. */
+.leaflet-tooltip.incident-number {
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.leaflet-tooltip.incident-number::before {
+  display: none;
+}
