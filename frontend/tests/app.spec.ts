@@ -292,7 +292,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
             {
               type: "Feature",
               geometry: { type: "Point", coordinates: [-75.308, 40.214] },
-              properties: { kind: "warning_sign", sequence: "A", deployment_priority: 1, deployment_label: "P1A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
+              properties: { kind: "warning_sign", sequence: "A", mutcd_sign_code: "W20-3", deployment_priority: 1, deployment_label: "P1A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
             },
           ],
         },

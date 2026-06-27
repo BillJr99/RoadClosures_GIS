@@ -553,6 +553,32 @@ and warning fields, plus a `shortfall_ft` value showing how far short the graph
 fell when a sign is `limited`, so a reviewer can see whether the graph had enough
 upstream path.
 
+Each advance-warning sign now carries an MUTCD designation: the closest sign is
+`W20-3` (ROAD CLOSED AHEAD) and the further advance signs are `W20-1`, with a
+standard `sign_size_in`. Signs also report `road_type_basis` (which rule chose
+the spacing band) and `speed_source` (`maxspeed` vs `missing`) so the chosen
+Table 6B-1 row is auditable when posted speed data is absent.
+
+### Channelizing Devices and Barricades
+
+For each closure the planner also emits field hardware (`plan.devices`):
+
+- a **Type III barricade** (`kind:"barricade"`) at the closure midpoint, carrying
+  the `R11-2` ROAD CLOSED sign; and
+- a **cone/drum taper** (`kind:"channelizing_device"`) on each approach.
+
+Taper length follows MUTCD Part 6: `L = W·S²/60` below 45 mph, else `L = W·S`
+(lane width `W` defaults to 12 ft; speed `S` from `maxspeed`, else a per–road-type
+default). Device spacing along the taper is the posted speed in feet. Devices
+inherit the parent closure's `deployment_priority`.
+
+### Approach Coverage (compliance)
+
+`plan.compliance` summarizes advance-warning coverage: each closure has two
+approach sides, and a side counts as covered only when an advance sign was
+actually placed on the graph (not merely projected). The UI shows covered vs
+total sides so reviewers can spot approaches that still need signs.
+
 ### Deployment Priority
 
 Closures and signs carry a `deployment_priority` (1 = stage first) so crews with

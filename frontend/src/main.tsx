@@ -79,6 +79,8 @@ type PlanResponse = {
   incidents?: FeatureCollection;
   overlays: FeatureCollection;
   warning_signs?: FeatureCollection;
+  devices?: FeatureCollection;
+  compliance?: Record<string, unknown>;
   graph_source?: Record<string, unknown>;
   ranked_closures: Array<Record<string, unknown>>;
   hydrant_candidates: Array<Record<string, unknown>>;
@@ -1437,9 +1439,20 @@ function App() {
                     {Boolean(feature.properties?.deployment_label) && (
                       <span className="priority-badge" title="Field set-up priority (set up first)">{String(feature.properties?.deployment_label)}</span>
                     )}
-                    {String(feature.properties?.sequence)} · {String(feature.properties?.approach_road)} · {String(feature.properties?.distance_from_closure_ft)} ft · {String(feature.properties?.placement_status)}
+                    {String(feature.properties?.mutcd_sign_code)} · {String(feature.properties?.approach_road)} · {String(feature.properties?.distance_from_closure_ft)} ft · {String(feature.properties?.placement_status)}
                   </span>
                 ))}
+                {plan.compliance && (
+                  <span>
+                    Approach coverage: {String(plan.compliance.approach_sides_covered)}/{String(plan.compliance.approach_sides_total)} sides
+                    {Number(plan.compliance.approach_sides_uncovered) > 0 ? ` · ${String(plan.compliance.approach_sides_uncovered)} need review` : " · all covered"}
+                  </span>
+                )}
+                {plan.devices && (
+                  <span>
+                    Devices: {plan.devices.features.filter((f) => f.properties?.kind === "barricade").length} barricade(s) · {plan.devices.features.filter((f) => f.properties?.kind === "channelizing_device").length} channelizing device(s)
+                  </span>
+                )}
               </div>
             )}
           </section>
@@ -1504,7 +1517,23 @@ function App() {
               key={`warning-signs-${planVersion}`}
               data={plan.warning_signs}
               pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 7, color: "#7c3aed", fillColor: "#a855f7", fillOpacity: 0.9, weight: 2 })}
-              onEachFeature={(feature, layer) => layer.bindTooltip(`Advisory sign: ${featureTooltip(feature, "sign")}`)}
+              onEachFeature={(feature, layer) => layer.bindTooltip(`Advisory sign ${String(feature.properties?.mutcd_sign_code ?? "")}: ${featureTooltip(feature, "sign")}`)}
+            />
+          )}
+          {plan?.devices && (
+            <GeoJSON
+              key={`devices-${planVersion}`}
+              data={plan.devices}
+              pointToLayer={(feature, latlng) =>
+                feature.properties?.kind === "barricade"
+                  ? L.circleMarker(latlng, { radius: 7, color: "#b91c1c", fillColor: "#ef4444", fillOpacity: 0.95, weight: 2 })
+                  : L.circleMarker(latlng, { radius: 4, color: "#c2410c", fillColor: "#f97316", fillOpacity: 0.9, weight: 1 })
+              }
+              onEachFeature={(feature, layer) =>
+                layer.bindTooltip(
+                  `${String(feature.properties?.device_type ?? "device")}: ${featureTooltip(feature, "device")}`,
+                )
+              }
             />
           )}
           {incident && (
@@ -1554,6 +1583,8 @@ function App() {
             <span><i className="legend-line hose" /> Hose path</span>
             <span><i className="legend-line closure" /> Closure</span>
             <span><i className="legend-swatch sign" /> Sign</span>
+            <span><i className="legend-swatch barricade" /> Barricade</span>
+            <span><i className="legend-swatch device" /> Channelizing device</span>
           </div>
         )}
       </section>

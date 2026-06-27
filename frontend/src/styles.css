@@ -412,6 +412,14 @@ button.primary {
   background: #a855f7;
 }
 
+.legend-swatch.barricade {
+  background: #ef4444;
+}
+
+.legend-swatch.device {
+  background: #f97316;
+}
+
 .legend-line.hose {
   background: #0969da;
 }

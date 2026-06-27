@@ -17,7 +17,7 @@ from app.models import IncidentPlanRequest
 from app.services.elevation import path_max_grade
 from app.services.graph_cache import graph_radius_m, load_or_fetch_graph
 from app.services.road_matching import enrich_graph_with_county_roads
-from app.services.warning_signs import warning_sign_features
+from app.services.warning_signs import coverage_summary, device_features, warning_sign_features
 
 
 M_TO_FT = 3.28084
@@ -552,6 +552,8 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         max_distance_ft=req.sign_max_distance_ft,
         deployment_priorities=deployment_priorities,
     )
+    devices = device_features(graph, ranked, deployment_priorities=deployment_priorities)
+    compliance = coverage_summary(ranked, warning_signs)
     hose_features = []
     for index, hydrant in enumerate(selected_hydrants, start=1):
         hose_features.append(
@@ -598,9 +600,18 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         "incidents": {"type": "FeatureCollection", "features": incident_features},
         "overlays": {
             "type": "FeatureCollection",
-            "features": [*incident_features, *hydrant_features, *hose_features, *closure_features, *warning_signs["features"]],
+            "features": [
+                *incident_features,
+                *hydrant_features,
+                *hose_features,
+                *closure_features,
+                *warning_signs["features"],
+                *devices["features"],
+            ],
         },
         "warning_signs": warning_signs,
+        "devices": devices,
+        "compliance": compliance,
         "graph_source": graph_source,
         "ranked_closures": [feature["properties"] for feature in closure_features],
         "hydrant_candidates": [
