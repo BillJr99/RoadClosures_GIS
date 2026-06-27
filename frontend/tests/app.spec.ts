@@ -78,6 +78,13 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
     await route.fulfill({ status: 201, json: created });
   });
   await page.route("**/api/manual-hydrants/manual-test", async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON();
+      const updated = { ...manualHydrants[0], ...body, manual_id: "manual-test" };
+      manualHydrants = [updated];
+      await route.fulfill({ status: 200, json: updated });
+      return;
+    }
     manualHydrants = [];
     await route.fulfill({ status: 204, body: "" });
   });
@@ -385,8 +392,13 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByPlaceholder("Lon").fill("-75.306");
   await page.getByTitle("Add manual hydrant").click();
   await expect(page.getByText("Known Hydrant")).toBeVisible();
+  await page.getByTitle("Edit manual hydrant").click();
+  await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Known Hydrant");
+  await page.getByLabel("Name", { exact: true }).fill("Renamed Hydrant");
+  await page.getByTitle("Update manual hydrant").click();
+  await expect(page.getByText("Renamed Hydrant")).toBeVisible();
   await page.getByTitle("Remove").click();
-  await expect(page.getByText("Known Hydrant")).toHaveCount(0);
+  await expect(page.getByText("Renamed Hydrant")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Build From Sources" }).click();
   expect(buildCalled).toBe(true);
@@ -414,8 +426,9 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   expect(lastPlanBody?.sign_max_distance_ft).toBe(900);
 
   await page.getByRole("button", { name: /Add Hydrant/i }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Recommendations ready/i })).toBeVisible();
-  expect(lastPlanBody?.hydrant_count).toBe(2);
+  // Assert the functional outcome (re-run with an extra hydrant) rather than the
+  // transient toast, which fades on a timer and races the assertion.
+  await expect.poll(() => lastPlanBody?.hydrant_count).toBe(2);
 
   await page.getByRole("button", { name: /Clear Incident/i }).click();
   await expect(page.getByText(/Remove this incident and clear recommendations/i)).toBeVisible();

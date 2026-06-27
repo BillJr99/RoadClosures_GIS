@@ -139,8 +139,10 @@ The script runs:
 - frontend unit tests with `vitest`
 - frontend production build with Vite/TypeScript
 - Playwright browser orchestration tests that mock API responses and exercise
-  layer loading, address search, manual hydrant add/remove, rebuild action, and
-  scenario CRUD/run controls, and closure recommendation rendering
+  layer loading, address search, manual hydrant add/edit/remove, the background
+  rebuild job, scenario CRUD/run controls, closure recommendation rendering with
+  deployment-priority badges and MUTCD codes, hydrant explainability, and CSV
+  export
 
 If Playwright browsers are missing, install them once:
 

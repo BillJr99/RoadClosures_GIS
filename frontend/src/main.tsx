@@ -153,6 +153,7 @@ function App() {
     source_note: "",
     status: "active",
   });
+  const [editingManualId, setEditingManualId] = useState<string | null>(null);
   const [scenarioDraft, setScenarioDraft] = useState({
     name: "",
     incident_radius_ft: "300",
@@ -686,25 +687,61 @@ function App() {
     setMessage(`Promoted ${result.promoted_count} scenario summaries.`);
   }
 
-  async function addManualHydrant() {
+  function resetManualDraft() {
+    setManualDraft({ name: "", lat: "", lon: "", flow_class: "unknown", source_note: "", status: "active" });
+    setEditingManualId(null);
+    setManualHydrantPickMode(false);
+  }
+
+  function startEditManualHydrant(hydrant: ManualHydrant) {
+    setEditingManualId(hydrant.manual_id);
+    setManualDraft({
+      name: hydrant.name,
+      lat: String(hydrant.lat),
+      lon: String(hydrant.lon),
+      flow_class: hydrant.flow_class,
+      source_note: hydrant.source_note,
+      status: hydrant.status,
+    });
+    setManualHydrantPickMode(false);
+    setMessage(`Editing manual hydrant ${hydrant.name || hydrant.manual_id}.`);
+  }
+
+  async function saveManualHydrant() {
     const lat = Number(manualDraft.lat);
     const lon = Number(manualDraft.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       setMessage("Manual hydrant needs valid latitude and longitude.");
       return;
     }
-    await jsonFetch<ManualHydrant>(`${API}/manual-hydrants`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...manualDraft, lat, lon }),
-    });
-    setManualDraft({ name: "", lat: "", lon: "", flow_class: "unknown", source_note: "", status: "active" });
-    setManualHydrantPickMode(false);
-    await loadLayers();
+    try {
+      if (editingManualId) {
+        await jsonFetch<ManualHydrant>(`${API}/manual-hydrants/${editingManualId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...manualDraft, lat, lon }),
+        });
+        setMessage("Manual hydrant updated.");
+      } else {
+        await jsonFetch<ManualHydrant>(`${API}/manual-hydrants`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...manualDraft, lat, lon }),
+        });
+        setMessage("Manual hydrant added.");
+      }
+      resetManualDraft();
+      await loadLayers();
+    } catch (error) {
+      setMessage(`Manual hydrant save failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async function removeManualHydrant(id: string) {
     await jsonFetch(`${API}/manual-hydrants/${id}`, { method: "DELETE" });
+    if (editingManualId === id) {
+      resetManualDraft();
+    }
     await loadLayers();
   }
 
@@ -923,7 +960,12 @@ function App() {
             >
               <MapPin size={18} /> Pick
             </button>
-            <button onClick={addManualHydrant} title="Add manual hydrant"><Plus size={18} /> Add</button>
+            <button onClick={saveManualHydrant} title={editingManualId ? "Update manual hydrant" : "Add manual hydrant"}>
+              {editingManualId ? <Check size={18} /> : <Plus size={18} />} {editingManualId ? "Update" : "Add"}
+            </button>
+            {editingManualId && (
+              <button onClick={resetManualDraft} title="Cancel manual hydrant edit"><X size={18} /> Cancel</button>
+            )}
           </div>
           {manualHydrantPickMode && <div className="inline-status">Click the map to fill the manual hydrant coordinates. It will not be saved until you click Add.</div>}
           <div className="inline">
@@ -942,6 +984,7 @@ function App() {
             {manualHydrants.map((hydrant) => (
               <div className="list-row" key={hydrant.manual_id}>
                 <span>{hydrant.name || hydrant.manual_id}</span>
+                <button onClick={() => startEditManualHydrant(hydrant)} title="Edit manual hydrant"><Pencil size={16} /></button>
                 <button onClick={() => removeManualHydrant(hydrant.manual_id)} title="Remove"><Trash2 size={16} /></button>
               </div>
             ))}
