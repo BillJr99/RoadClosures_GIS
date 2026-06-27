@@ -301,7 +301,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
         },
         graph_source: { cache_hit: true, cache_key: "test" },
         ranked_closures: [{ rank: 1, deployment_priority: 1, deployment_label: "P1", name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good", county_st_name: "Main St", county_match_confidence: 0.9 }],
-        hydrant_candidates: [],
+        hydrant_candidates: [{ score_breakdown: { length: 0.3, curvature: 0.1, grade: 0, snap: 0.05 } }],
         run_id: "adhoc-20260624T120001Z",
         scenario_id: "adhoc-20260624T120001Z",
         report_path: "data/scenario_runs/adhoc-20260624T120001Z/report.html",
@@ -401,6 +401,12 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await expect(page.getByText("#1 Main St")).toBeVisible();
   await expect(page.locator(".closure .priority-badge").filter({ hasText: "P1" }).first()).toBeVisible();
   await expect(page.locator(".priority-badge").filter({ hasText: "P1A" })).toBeVisible();
+  await expect(page.getByText(/Why chosen/i)).toBeVisible();
+  await expect(page.getByText(/Field deployment exports/i)).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Signs & devices CSV/i }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toContain(".csv");
   expect(planCalled).toBe(true);
   expect(lastPlanBody?.hydrant_count).toBe(1);
   expect(lastPlanBody?.hose_max_ft).toBe(650);

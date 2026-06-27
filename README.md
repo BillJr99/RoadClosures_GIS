@@ -626,6 +626,29 @@ The frontend submits the build job and polls until completion, showing a
 "Building…" state. Jobs are in-memory and process-local
 (`backend/app/services/jobs.py`).
 
+### Field-Deployment Exports and Explainability
+
+The Plan Review panel can export the current plan for field use, built entirely
+from the plan the UI already holds (no server round-trip, no extra dependencies,
+`frontend/src/export.ts`):
+
+- **Signs & devices CSV** — every advance-warning sign and channelizing device,
+  ordered by deployment priority, with MUTCD code, approach, distance, placement
+  status, and lat/lon.
+- **Closures CSV** — ranked closures with priority, cost, sightline, and reason.
+- **Print report** — a print-friendly HTML view (browser print-to-PDF).
+
+The panel also explains *why* the recommended hydrant won, showing the normalized
+`score_breakdown` contributions, and surfaces the infeasibility banner and
+approach-coverage compliance.
+
+### Frontend Module Layout
+
+`frontend/src/` is split into focused modules: `types.ts` (shared types),
+`api.ts` (API base + `jsonFetch`), `export.ts` (CSV/printable exports),
+`mapView.tsx` (the Leaflet map and its sub-components), and `main.tsx` (the app
+shell, sidebar panels, and state).
+
 ## Current Implementation Details
 
 ### Routing Graph Strategy

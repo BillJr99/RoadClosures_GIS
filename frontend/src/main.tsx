@@ -1,18 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
-  CircleMarker,
-  GeoJSON,
-  MapContainer,
-  Marker,
-  Pane,
-  TileLayer,
-  Tooltip,
-  useMap,
-  useMapEvents,
-} from "react-leaflet";
-import L from "leaflet";
-import {
   Check,
   Droplets,
   FileCheck2,
@@ -33,124 +21,22 @@ import {
 import "leaflet/dist/leaflet.css";
 import "./styles.css";
 import { formatCoords } from "./format";
-
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:8001/api";
-const CENTER: [number, number] = [40.195, -75.425];
-
-type FeatureCollection = GeoJSON.FeatureCollection;
-
-type ManualHydrant = {
-  manual_id: string;
-  name: string;
-  lat: number;
-  lon: number;
-  flow_class: string;
-  source_note: string;
-  status: string;
-  updated_at: string;
-};
-
-type Incident = { lat: number; lon: number };
-
-type Scenario = {
-  scenario_id: string;
-  name: string;
-  lat: number;
-  lon: number;
-  incident_radius_ft: number;
-  study_radius_ft: number;
-  hose_max_ft: number;
-  reviewer_notes: string;
-  expected_hydrant_hint: string;
-  expected_closure_hint: string;
-  status: string;
-  updated_at: string;
-};
-
-type PlanResponse = {
-  cut_value: number;
-  feasible?: boolean;
-  feasibility_note?: string;
-  selected_hydrant: GeoJSON.Feature;
-  selected_hydrants?: FeatureCollection;
-  hose_route: GeoJSON.Feature;
-  hose_routes?: FeatureCollection;
-  closures: FeatureCollection;
-  incidents?: FeatureCollection;
-  overlays: FeatureCollection;
-  warning_signs?: FeatureCollection;
-  devices?: FeatureCollection;
-  compliance?: Record<string, unknown>;
-  graph_source?: Record<string, unknown>;
-  ranked_closures: Array<Record<string, unknown>>;
-  hydrant_candidates: Array<Record<string, unknown>>;
-  run_id?: string;
-  scenario_id?: string;
-  report_path?: string;
-};
-
-type ScenarioRunResult = {
-  run_id?: string;
-  run_dir: string;
-  report_path: string;
-  results: Array<{
-    scenario_id: string;
-    name: string;
-    status: string;
-    golden_status: string;
-    differences: string[];
-    error?: string;
-  }>;
-};
-
-type ScenarioRunListItem = {
-  run_id: string;
-  report_path: string;
-  result_count: number;
-  failed_count: number;
-  changed_count: number;
-  missing_count: number;
-};
-
-type ScenarioGolden = {
-  scenario_id: string;
-  reviewer: string;
-  reviewed_at: string;
-  expected_hydrant: {
-    name: string;
-    source: string;
-    source_id: string;
-    notes: string;
-  };
-  expected_closures: Array<{ road: string; reason: string; notes: string }>;
-  expected_warning_signs: Array<{ road: string; sign_label: string; distance_ft: number | null; notes: string }>;
-  notes: string;
-  updated_at: string;
-};
-
-type GoldenDraft = {
-  reviewer: string;
-  reviewed_at: string;
-  hydrant_name: string;
-  hydrant_source: string;
-  hydrant_source_id: string;
-  hydrant_notes: string;
-  closures_text: string;
-  warning_signs_text: string;
-  notes: string;
-};
-
-type PlanMeaning = {
-  closureText: string;
-  signText: string;
-  nextStep: string;
-};
-
-type PlanLayers = {
-  hose: FeatureCollection;
-  closures: FeatureCollection;
-  other: FeatureCollection;
-};
+import { MapView } from "./mapView";
+import { API, jsonFetch } from "./api";
+import { closureCsv, downloadCsv, openPrintableReport, signAndDeviceCsv } from "./export";
+import type {
+  FeatureCollection,
+  GoldenDraft,
+  Incident,
+  ManualHydrant,
+  PlanLayers,
+  PlanMeaning,
+  PlanResponse,
+  Scenario,
+  ScenarioGolden,
+  ScenarioRunListItem,
+  ScenarioRunResult,
+} from "./types";
 
 function emptyGoldenDraft(): GoldenDraft {
   return {
@@ -226,112 +112,6 @@ function offsetLineFeature(feature: GeoJSON.Feature, offset: number): GeoJSON.Fe
       coordinates: coordinates.map(([lon, lat]) => [lon + ox, lat + oy]),
     },
   };
-}
-
-function featureTooltip(feature: GeoJSON.Feature, fallback: string): string {
-  const props = feature.properties ?? {};
-  const label = String(
-    props.name ||
-      props.county_st_name ||
-      props.source ||
-      props.kind ||
-      props.approach_road ||
-      fallback,
-  );
-  return props.deployment_label ? `${String(props.deployment_label)} · ${label}` : label;
-}
-
-async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  if (!response.ok) {
-    const text = await response.text();
-    let message = text || response.statusText;
-    try {
-      const parsed = JSON.parse(text);
-      message = String(parsed.detail || message);
-    } catch {
-      // Keep the raw response text when it is not JSON.
-    }
-    throw new Error(message);
-  }
-  if (response.status === 204) {
-    return undefined as T;
-  }
-  return (await response.json()) as T;
-}
-
-function IncidentClick({
-  incident,
-  secondaryIncidentMode,
-  manualHydrantPickMode,
-  onPick,
-  onPickSecondary,
-  onPickManualHydrant,
-  onExistingIncident,
-}: {
-  incident: Incident | null;
-  secondaryIncidentMode: boolean;
-  manualHydrantPickMode: boolean;
-  onPick: (incident: Incident) => void;
-  onPickSecondary: (incident: Incident) => void;
-  onPickManualHydrant: (incident: Incident) => void;
-  onExistingIncident: () => void;
-}) {
-  useMapEvents({
-    click(event) {
-      const target = event.originalEvent.target;
-      if (target instanceof Element && target.closest(".leaflet-marker-icon")) {
-        return;
-      }
-      if (manualHydrantPickMode) {
-        onPickManualHydrant({ lat: event.latlng.lat, lon: event.latlng.lng });
-        return;
-      }
-      if (incident && event.latlng.distanceTo(L.latLng(incident.lat, incident.lon)) <= 50) {
-        onExistingIncident();
-        return;
-      }
-      if (secondaryIncidentMode) {
-        onPickSecondary({ lat: event.latlng.lat, lon: event.latlng.lng });
-        return;
-      }
-      onPick({ lat: event.latlng.lat, lon: event.latlng.lng });
-    },
-  });
-  return null;
-}
-
-function PlanFocus({ plan, version }: { plan: PlanResponse | null; version: number }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!plan?.overlays.features.length) return;
-    const layer = L.geoJSON(plan.overlays);
-    const bounds = layer.getBounds();
-    if (bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 17 });
-    }
-  }, [map, plan, version]);
-  return null;
-}
-
-function IncidentFocus({ incident }: { incident: Incident | null }) {
-  const map = useMap();
-  useEffect(() => {
-    if (incident) {
-      map.flyTo([incident.lat, incident.lon], Math.max(map.getZoom(), 15), { duration: 0.7 });
-    }
-  }, [incident, map]);
-  return null;
-}
-
-// Renders children only at or above `minZoom`. Used to skip drawing the large
-// county-wide road layer when zoomed far out, where it is expensive and not
-// useful.
-function ZoomGate({ minZoom, children }: { minZoom: number; children: React.ReactNode }) {
-  const map = useMap();
-  const [zoom, setZoom] = useState(() => map.getZoom());
-  useMapEvents({ zoomend: () => setZoom(map.getZoom()) });
-  return zoom >= minZoom ? <>{children}</> : null;
 }
 
 function App() {
@@ -946,6 +726,9 @@ function App() {
 
   const selectedHydrantProps = plan?.selected_hydrant.properties ?? {};
   const hoseProps = plan?.hose_route.properties ?? {};
+  const hydrantBreakdown = plan?.hydrant_candidates?.[0]?.score_breakdown as
+    | Record<string, unknown>
+    | undefined;
   const activeScenarios = scenarios
     .filter((scenario) => scenario.status === "active")
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -1444,6 +1227,11 @@ function App() {
               <span>Hose {String(hoseProps.length_ft ?? "n/a")} ft · curvature {String(hoseProps.curvature ?? "n/a")} · elevation {String(hoseProps.elevation_change_ft ?? "n/a")} ft · max grade {String(hoseProps.max_grade ?? "n/a")}</span>
               <span>Map: incident pin in red, recommended hydrant marker, hose path in blue, closures in red, advisory signs in purple.</span>
               {plan.graph_source && <span>Graph: {String(plan.graph_source.source ?? "graph")} · cache {String(plan.graph_source.cache_hit)}</span>}
+              {hydrantBreakdown && (
+                <span title="Why this hydrant scored best (lower is better, normalized contributions)">
+                  Why chosen: length {String(hydrantBreakdown.length ?? 0)} · curvature {String(hydrantBreakdown.curvature ?? 0)} · grade {String(hydrantBreakdown.grade ?? 0)} · snap {String(hydrantBreakdown.snap ?? 0)}
+                </span>
+              )}
             </div>
             <h2>Closure Ranking</h2>
             <div className="list">
@@ -1494,141 +1282,48 @@ function App() {
                 )}
               </div>
             )}
+            <div className="scenario-result">
+              <strong><FileCheck2 size={16} /> Field deployment exports</strong>
+              <span>Lists are ordered by deployment priority (P1 = set up first).</span>
+              <div className="inline">
+                <button
+                  title="Download signs and devices CSV"
+                  onClick={() => downloadCsv(`plan-signs-devices-${plan.run_id ?? "adhoc"}.csv`, signAndDeviceCsv(plan))}
+                >
+                  Signs & devices CSV
+                </button>
+                <button
+                  title="Download closures CSV"
+                  onClick={() => downloadCsv(`plan-closures-${plan.run_id ?? "adhoc"}.csv`, closureCsv(plan))}
+                >
+                  Closures CSV
+                </button>
+                <button title="Open a printable plan report" onClick={() => openPrintableReport(plan, incident)}>
+                  Print report
+                </button>
+              </div>
+            </div>
           </section>
         )}
       </aside>
 
-      <section className="map-panel">
-        {loadToast && <div className="toast">{loadToast}</div>}
-        <MapContainer center={CENTER} zoom={12} className="map" preferCanvas>
-          <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          <IncidentClick
-            incident={incident}
-            secondaryIncidentMode={secondaryIncidentMode}
-            manualHydrantPickMode={manualHydrantPickMode}
-            onPick={setIncidentLocation}
-            onPickSecondary={addSecondaryIncident}
-            onPickManualHydrant={pickManualHydrantLocation}
-            onExistingIncident={requestIncidentRemoval}
-          />
-          <IncidentFocus incident={incident} />
-          <PlanFocus plan={plan} version={planVersion} />
-          {roads && (
-            <ZoomGate minZoom={11}>
-              <GeoJSON
-                data={roads}
-                style={{ color: "#74808c", weight: 1, opacity: 0.6 }}
-                onEachFeature={(feature, layer) => layer.bindTooltip(`Road: ${featureTooltip(feature, "road")}`)}
-              />
-            </ZoomGate>
-          )}
-          {hydrants && (
-            <GeoJSON
-              data={hydrants}
-              pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 4, color: "#1677a3", fillOpacity: 0.8 })}
-              onEachFeature={(feature, layer) => layer.bindTooltip(`Hydrant: ${featureTooltip(feature, "hydrant")}`)}
-            />
-          )}
-          {displayPlanLayers?.other.features.length ? (
-            <GeoJSON
-              key={`plan-other-${planVersion}`}
-              data={displayPlanLayers.other}
-              style={{ color: "#d9480f", weight: 4 }}
-              onEachFeature={(feature, layer) => layer.bindTooltip(featureTooltip(feature, "plan feature"))}
-            />
-          ) : null}
-          {displayPlanLayers?.hose.features.length ? (
-            <GeoJSON
-              key={`plan-hose-${planVersion}`}
-              data={displayPlanLayers.hose}
-              style={{ color: "#0969da", weight: 5, opacity: 0.95 }}
-              onEachFeature={(feature, layer) => layer.bindTooltip(`Hose path: ${featureTooltip(feature, "hydrant to incident")}`)}
-            />
-          ) : null}
-          {displayPlanLayers?.closures.features.length ? (
-            <GeoJSON
-              key={`plan-closures-${planVersion}`}
-              data={displayPlanLayers.closures}
-              style={{ color: "#dc2626", weight: 5, opacity: 0.95 }}
-              onEachFeature={(feature, layer) => layer.bindTooltip(`Closure: ${featureTooltip(feature, "road segment")}`)}
-            />
-          ) : null}
-          {plan?.warning_signs && (
-            <GeoJSON
-              key={`warning-signs-${planVersion}`}
-              data={plan.warning_signs}
-              pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 7, color: "#7c3aed", fillColor: "#a855f7", fillOpacity: 0.9, weight: 2 })}
-              onEachFeature={(feature, layer) => layer.bindTooltip(`Advisory sign ${String(feature.properties?.mutcd_sign_code ?? "")}: ${featureTooltip(feature, "sign")}`)}
-            />
-          )}
-          {plan?.devices && (
-            <GeoJSON
-              key={`devices-${planVersion}`}
-              data={plan.devices}
-              pointToLayer={(feature, latlng) =>
-                feature.properties?.kind === "barricade"
-                  ? L.circleMarker(latlng, { radius: 7, color: "#b91c1c", fillColor: "#ef4444", fillOpacity: 0.95, weight: 2 })
-                  : L.circleMarker(latlng, { radius: 4, color: "#c2410c", fillColor: "#f97316", fillOpacity: 0.9, weight: 1 })
-              }
-              onEachFeature={(feature, layer) =>
-                layer.bindTooltip(
-                  `${String(feature.properties?.device_type ?? "device")}: ${featureTooltip(feature, "device")}`,
-                )
-              }
-            />
-          )}
-          {incident && (
-            <Pane name="incident-pane" style={{ zIndex: 750 }}>
-              <CircleMarker
-                center={[incident.lat, incident.lon]}
-                radius={8}
-                pathOptions={{ bubblingMouseEvents: true, className: "incident-marker", color: "#b42318", fillColor: "#c83525", fillOpacity: 0.9, weight: 3 }}
-                eventHandlers={{
-                  click() {
-                    requestIncidentRemoval();
-                  },
-                }}
-              >
-                <Tooltip>Incident: click again to remove</Tooltip>
-              </CircleMarker>
-            </Pane>
-          )}
-          {secondaryIncidents.map((item, index) => (
-            <CircleMarker
-              key={`${item.lat}-${item.lon}-${index}`}
-              center={[item.lat, item.lon]}
-              radius={7}
-              pathOptions={{ color: "#9a3412", fillColor: "#fb923c", fillOpacity: 0.9, weight: 2 }}
-            >
-              <Tooltip>Secondary incident {index + 1}</Tooltip>
-            </CircleMarker>
-          ))}
-          {selectedHydrantFeatures.map((feature, index) => {
-            if (feature.geometry.type !== "Point") return null;
-            const coords = feature.geometry.coordinates as [number, number];
-            const props = feature.properties ?? {};
-            return (
-              <Marker key={`selected-hydrant-${index}-${planVersion}`} title="Selected hydrant marker" position={[coords[1], coords[0]]}>
-                <Tooltip>
-                  Selected hydrant {index + 1}: {String(props.name || props.source || "hydrant")}
-                </Tooltip>
-              </Marker>
-            );
-          })}
-        </MapContainer>
-        {plan && (
-          <div className="map-legend">
-            <span><i className="legend-swatch incident" /> Incident</span>
-            <span><i className="legend-swatch hydrant" /> Hydrant</span>
-            <span><i className="legend-swatch selected-hydrant" /> Selected hydrant</span>
-            <span><i className="legend-line hose" /> Hose path</span>
-            <span><i className="legend-line closure" /> Closure</span>
-            <span><i className="legend-swatch sign" /> Sign</span>
-            <span><i className="legend-swatch barricade" /> Barricade</span>
-            <span><i className="legend-swatch device" /> Channelizing device</span>
-          </div>
-        )}
-      </section>
+      <MapView
+        roads={roads}
+        hydrants={hydrants}
+        incident={incident}
+        secondaryIncidents={secondaryIncidents}
+        secondaryIncidentMode={secondaryIncidentMode}
+        manualHydrantPickMode={manualHydrantPickMode}
+        plan={plan}
+        planVersion={planVersion}
+        displayPlanLayers={displayPlanLayers}
+        selectedHydrantFeatures={selectedHydrantFeatures}
+        loadToast={loadToast}
+        onPick={setIncidentLocation}
+        onPickSecondary={addSecondaryIncident}
+        onPickManualHydrant={pickManualHydrantLocation}
+        onExistingIncident={requestIncidentRemoval}
+      />
     </main>
   );
 }
