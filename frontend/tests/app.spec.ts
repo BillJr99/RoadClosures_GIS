@@ -78,6 +78,13 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
     await route.fulfill({ status: 201, json: created });
   });
   await page.route("**/api/manual-hydrants/manual-test", async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON();
+      const updated = { ...manualHydrants[0], ...body, manual_id: "manual-test" };
+      manualHydrants = [updated];
+      await route.fulfill({ status: 200, json: updated });
+      return;
+    }
     manualHydrants = [];
     await route.fulfill({ status: 204, body: "" });
   });
@@ -248,9 +255,12 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
       json: [{ label: "123 Main St, Montgomery County", lat: 40.215, lon: -75.305 }],
     });
   });
-  await page.route("**/api/layers/build?include_graph=true", async (route) => {
+  await page.route("**/api/jobs/build?include_graph=true", async (route) => {
     buildCalled = true;
-    await route.fulfill({ json: { roads: { roads: 1 }, hydrants: { reconciled: 1 } } });
+    await route.fulfill({ json: { job_id: "build-job-1", status: "pending" } });
+  });
+  await page.route("**/api/jobs/build-job-1", async (route) => {
+    await route.fulfill({ json: { job_id: "build-job-1", status: "done", result: { roads: { roads: 1 }, hydrants: { reconciled: 1 } }, error: null } });
   });
   await page.route("**/api/plan", async (route) => {
     planCalled = true;
@@ -271,7 +281,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
             {
               type: "Feature",
               geometry: { type: "LineString", coordinates: [[-75.306, 40.214], [-75.307, 40.215]] },
-              properties: { rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good" },
+              properties: { rank: 1, deployment_priority: 1, deployment_label: "P1", name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good" },
             },
           ],
         },
@@ -292,13 +302,13 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
             {
               type: "Feature",
               geometry: { type: "Point", coordinates: [-75.308, 40.214] },
-              properties: { kind: "warning_sign", sequence: "A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
+              properties: { kind: "warning_sign", sequence: "A", mutcd_sign_code: "W20-3", deployment_priority: 1, deployment_label: "P1A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
             },
           ],
         },
         graph_source: { cache_hit: true, cache_key: "test" },
-        ranked_closures: [{ rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good", county_st_name: "Main St", county_match_confidence: 0.9 }],
-        hydrant_candidates: [],
+        ranked_closures: [{ rank: 1, deployment_priority: 1, deployment_label: "P1", name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good", county_st_name: "Main St", county_match_confidence: 0.9 }],
+        hydrant_candidates: [{ score_breakdown: { length: 0.3, curvature: 0.1, grade: 0, snap: 0.05 } }],
         run_id: "adhoc-20260624T120001Z",
         scenario_id: "adhoc-20260624T120001Z",
         report_path: "data/scenario_runs/adhoc-20260624T120001Z/report.html",
@@ -382,20 +392,33 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByPlaceholder("Lon").fill("-75.306");
   await page.getByTitle("Add manual hydrant").click();
   await expect(page.getByText("Known Hydrant")).toBeVisible();
+  await page.getByTitle("Edit manual hydrant").click();
+  await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Known Hydrant");
+  await page.getByLabel("Name", { exact: true }).fill("Renamed Hydrant");
+  await page.getByTitle("Update manual hydrant").click();
+  await expect(page.getByText("Renamed Hydrant")).toBeVisible();
   await page.getByTitle("Remove").click();
-  await expect(page.getByText("Known Hydrant")).toHaveCount(0);
+  await expect(page.getByText("Renamed Hydrant")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Build From Sources" }).click();
   expect(buildCalled).toBe(true);
 
   await page.getByRole("button", { name: /Recommend Closures/i }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Running closure recommendations/i })).toBeVisible();
+  // Assert persistent UI state, not the transient toasts (which auto-clear on a
+  // 4.5s timer and race the assertion in CI).
   await expect(page.locator(".inline-status").filter({ hasText: /Plan ready/i })).toBeVisible();
-  await expect(page.locator(".toast").filter({ hasText: /Recommendations ready/i })).toBeVisible();
   await expect(page.getByText(/Recommendation run: 1 result/i)).toBeVisible();
   await expect(page.getByText(/Recommendation summary/i)).toBeVisible();
   await expect(page.getByText(/drawn in red on the map/i)).toBeVisible();
   await expect(page.getByText("#1 Main St")).toBeVisible();
+  await expect(page.locator(".closure .priority-badge").filter({ hasText: "P1" }).first()).toBeVisible();
+  await expect(page.locator(".priority-badge").filter({ hasText: "P1A" })).toBeVisible();
+  await expect(page.getByText(/Why chosen/i)).toBeVisible();
+  await expect(page.getByText(/Field deployment exports/i)).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Signs & devices CSV/i }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toContain(".csv");
   expect(planCalled).toBe(true);
   expect(lastPlanBody?.hydrant_count).toBe(1);
   expect(lastPlanBody?.hose_max_ft).toBe(650);
@@ -403,8 +426,12 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   expect(lastPlanBody?.sign_max_distance_ft).toBe(900);
 
   await page.getByRole("button", { name: /Add Hydrant/i }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Recommendations ready/i })).toBeVisible();
-  expect(lastPlanBody?.hydrant_count).toBe(2);
+  // Assert the functional outcome (re-run with an extra hydrant) rather than the
+  // transient toast, which fades on a timer and races the assertion.
+  await expect.poll(() => lastPlanBody?.hydrant_count).toBe(2);
+  // Wait for the re-run to fully settle (button re-enables when planning ends)
+  // so its late response can't overwrite the removal message below.
+  await expect(page.getByRole("button", { name: /Add Hydrant/i })).toBeEnabled();
 
   await page.getByRole("button", { name: /Clear Incident/i }).click();
   await expect(page.getByText(/Remove this incident and clear recommendations/i)).toBeVisible();

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import layers, manual_hydrants, planner, scenarios
+from app.routes import jobs, layers, manual_hydrants, planner, scenarios
 
 
 app = FastAPI(title="Fire Police GIS Cordon Planner")
@@ -18,6 +18,7 @@ app.include_router(layers.router, prefix="/api")
 app.include_router(manual_hydrants.router, prefix="/api")
 app.include_router(planner.router, prefix="/api")
 app.include_router(scenarios.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
 
 
 @app.get("/api/health")

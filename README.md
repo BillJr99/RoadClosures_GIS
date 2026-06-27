@@ -139,8 +139,10 @@ The script runs:
 - frontend unit tests with `vitest`
 - frontend production build with Vite/TypeScript
 - Playwright browser orchestration tests that mock API responses and exercise
-  layer loading, address search, manual hydrant add/remove, rebuild action, and
-  scenario CRUD/run controls, and closure recommendation rendering
+  layer loading, address search, manual hydrant add/edit/remove, the background
+  rebuild job, scenario CRUD/run controls, closure recommendation rendering with
+  deployment-priority badges and MUTCD codes, hydrant explainability, and CSV
+  export
 
 If Playwright browsers are missing, install them once:
 
@@ -299,7 +301,9 @@ From a fire police review perspective, check:
 - `summary.closures`: whether the recommended closure roads make sense for
   isolating the incident and protecting the hose.
 - `plan.ranked_closures`: detailed closure reasons, road class/cost, county road
-  match fields, and sightline caution labels.
+  match fields, sightline caution labels, and a `deployment_priority`/
+  `deployment_label` (e.g. `P1`) giving the field set-up order (see
+  [Deployment Priority](#deployment-priority)).
 - `plan.overlays`: the map-ready incident, hydrant, hose, closure, and warning
   sign features.
 - `plan.warning_signs`: advisory MUTCD-based advance-warning sign candidate
@@ -464,14 +468,20 @@ For each hydrant, the planner snaps the hydrant and incident to nearest graph
 nodes. It then uses NetworkX shortest path over edge `length` to estimate the
 hose route. Candidates over `hose_max_ft` are rejected.
 
-Hydrant score is currently:
+The hydrant score is a weighted sum of **normalized** terms (lower is better):
 
 ```text
-length_m + (curvature_radians * 75.0) + (elevation_change_m * 2.0)
+score = w_length   * (length_m / hose_max_m)
+      + w_curvature * (curvature_radians / pi)
+      + w_grade     * (max_grade / MAX_GRADE)
+      + w_snap      * (hydrant_snap_m / max_snap_m)
 ```
 
-Lower score is better. This makes length the dominant factor while still
-penalizing twisty or hilly routes.
+Normalizing each term to roughly 0..1 before weighting keeps the weights
+unit-free and comparable (instead of mixing raw meters with radians). The
+weights live in `ScoringWeights` in `backend/app/config.py`. The planner returns
+a per-candidate `score_breakdown` (the normalized contribution of each term) so a
+reviewer can see *why* one hydrant beat another.
 
 ### Curvature Algorithm
 
@@ -515,7 +525,8 @@ edges. Use `scripts/audit_road_matching.sh` to generate a CSV for review.
 
 The closure problem is modeled as a graph cut:
 
-- super-source: outside traffic/perimeter nodes
+- super-source: outside traffic/perimeter nodes (nodes beyond
+  `PERIMETER_FRACTION` of the study radius, configured in `backend/app/config.py`)
 - super-sink: incident-area nodes
 - protected edges: hose route edges get very high capacity
 - closure cost: road class plus sightline penalties from grade/curvature where
@@ -524,29 +535,162 @@ The closure problem is modeled as a graph cut:
 NetworkX `minimum_cut` finds the least-cost edge set separating outside traffic
 from the incident area. Those cut edges become closure recommendations.
 
+Each closure's `sightline` label (`good`/`caution`) is derived from the edge's
+geometry penalty (`_sightline_penalty`, curvature + grade), not from the road
+class, so a sharp or steep approach reads as caution regardless of size. If the
+cheapest cut still costs near-infinity (no finite closure set can isolate the
+incident without crossing the protected hose route), the response sets
+`feasible: false` with a `feasibility_note`, and the UI shows a warning banner
+instead of a misleading closure list.
+
 ### MUTCD Warning Sign Algorithm
 
 For each closure edge, the planner classifies the road approach as urban low
 speed, urban high speed, rural, or expressway/freeway. It then applies MUTCD
 Table 6B-1 A/B/C distances and traces upstream along predecessor edges to place
-candidate signs. Outputs include placement status and warning fields so a
-reviewer can see whether the graph had enough upstream path.
+candidate signs. The upstream walk prefers the edge that best continues the
+closure's heading (straightest continuation by bearing) so a sign stays on the
+intended approach through complex intersections. Outputs include placement status
+and warning fields, plus a `shortfall_ft` value showing how far short the graph
+fell when a sign is `limited`, so a reviewer can see whether the graph had enough
+upstream path.
+
+Each advance-warning sign now carries an MUTCD designation: the closest sign is
+`W20-3` (ROAD CLOSED AHEAD) and the further advance signs are `W20-1`, with a
+standard `sign_size_in`. Signs also report `road_type_basis` (which rule chose
+the spacing band) and `speed_source` (`maxspeed` vs `missing`) so the chosen
+Table 6B-1 row is auditable when posted speed data is absent.
+
+### Channelizing Devices and Barricades
+
+For each closure the planner also emits field hardware (`plan.devices`):
+
+- a **Type III barricade** (`kind:"barricade"`) at the closure midpoint, carrying
+  the `R11-2` ROAD CLOSED sign; and
+- a **cone/drum taper** (`kind:"channelizing_device"`) on each approach.
+
+Taper length follows MUTCD Part 6: `L = W·S²/60` below 45 mph, else `L = W·S`
+(lane width `W` defaults to 12 ft; speed `S` from `maxspeed`, else a per–road-type
+default). Device spacing along the taper is the posted speed in feet. Devices
+inherit the parent closure's `deployment_priority`.
+
+### Approach Coverage (compliance)
+
+`plan.compliance` summarizes advance-warning coverage: each closure has two
+approach sides, and a side counts as covered only when an advance sign was
+actually placed on the graph (not merely projected). The UI shows covered vs
+total sides so reviewers can spot approaches that still need signs.
+
+### Deployment Priority
+
+Closures and signs carry a `deployment_priority` (1 = stage first) so crews with
+limited people and barriers know the order to set things up. This is independent
+of `rank` (which reflects min-cut cost). The priority score combines:
+
+- **traffic exposure** — the road class cost (`_class_cost`), so busier/higher
+  class roads are staged earlier; and
+- **visibility** — the sightline penalty from curvature and grade
+  (`_sightline_penalty`), so a closure drivers see late is treated as more urgent.
+
+Score is `class_cost * sightline_penalty`, tie-broken by cut capacity. Each
+closure feature gets `deployment_priority` and a `deployment_label` like `P1`.
+Each advance-warning sign inherits its parent closure's priority and gets a
+combined label such as `P1A`/`P1B`/`P1C` (priority + MUTCD sequence). The
+frontend shows these as badges in the closure and sign lists and in map
+tooltips, and they are intended to carry through to field deployment exports.
+
+### Performance
+
+- **Hydrant pre-filter**: hydrants are projected once (batched) and culled with a
+  SciPy KD-tree (`_within_radius_indices`) before any routing work, and the
+  survivors are snapped to graph nodes in a single batched `nearest_nodes` call
+  (`_nearest_nodes_xy`) instead of one call per hydrant.
+- **Min-cut**: the closure cut uses the `preflow_push` flow function, which is
+  typically much faster than the default on road-sized graphs (the min-cut value
+  is unique, so results are unchanged).
+- **Plan-result cache**: identical incident + parameters over the same graph
+  return a cached result instantly (`backend/app/services/plan_cache.py`, stored
+  under `data/generated/plan_cache/`, versioned by `PLAN_CACHE_VERSION`). Cached
+  responses are flagged with `graph_source.plan_cache_hit`.
+- **Map rendering**: the map uses Leaflet canvas rendering (`preferCanvas`) and
+  only draws the county-wide road layer at zoom ≥ 11 (`ZoomGate`).
+
+### Background Jobs
+
+Long operations run as background jobs so the UI stays responsive:
+
+- `POST /api/jobs/build?include_graph=true` starts a layer rebuild and returns
+  `{ job_id }`.
+- `GET /api/jobs/{job_id}` returns `{ status: pending|running|done|error, result,
+  error }`.
+
+The frontend submits the build job and polls until completion, showing a
+"Building…" state. Jobs are in-memory and process-local
+(`backend/app/services/jobs.py`).
+
+### Field-Deployment Exports and Explainability
+
+The Plan Review panel can export the current plan for field use, built entirely
+from the plan the UI already holds (no server round-trip, no extra dependencies,
+`frontend/src/export.ts`):
+
+- **Signs & devices CSV** — every advance-warning sign and channelizing device,
+  ordered by deployment priority, with MUTCD code, approach, distance, placement
+  status, and lat/lon.
+- **Closures CSV** — ranked closures with priority, cost, sightline, and reason.
+- **Print report** — a print-friendly HTML view (browser print-to-PDF).
+
+The panel also explains *why* the recommended hydrant won, showing the normalized
+`score_breakdown` contributions, and surfaces the infeasibility banner and
+approach-coverage compliance.
+
+### Frontend Module Layout
+
+`frontend/src/` is split into focused modules: `types.ts` (shared types),
+`api.ts` (API base + `jsonFetch`), `export.ts` (CSV/printable exports),
+`mapView.tsx` (the Leaflet map and its sub-components), and `main.tsx` (the app
+shell, sidebar panels, and state).
 
 ## Current Implementation Details
 
 ### Routing Graph Strategy
 
-The planner uses a cached incident-local graph strategy. If
-`data/generated/road_graph.graphml` exists, the planner uses that explicit graph.
-Otherwise it creates or reuses a graph cache entry under
-`data/generated/graph_cache/`, keyed by rounded incident location, study radius,
-network type, and cache version.
+The planner resolves a routing graph in this order:
+
+1. **Configured GraphML** — `data/generated/road_graph.graphml`, when present and
+   it covers the incident.
+2. **Operational-area tile** — a prebuilt larger graph that fully contains the
+   incident's study area (see below). This enables offline planning across a
+   whole response area.
+3. **Incident-local cache** — a graph cache entry under
+   `data/generated/graph_cache/`, keyed by rounded incident location, study
+   radius, network type, and cache version (fetched from OSM on first use).
 
 Use this to prebuild active scenario cache entries:
 
 ```bash
 scripts/build_graph_cache.sh
 scripts/build_graph_cache.sh --scenario-id scenario-norristown-main
+```
+
+### Operational-Area Tiles (offline planning)
+
+A tile is a larger road graph (e.g. a municipality or response district) saved
+once to GraphML under `data/generated/graph_tiles/`, with an `index.json` listing
+each tile's center and radius. When an incident's study disc fits entirely inside
+a tile (`distance(center, incident) + study_radius <= tile.radius`), the planner
+loads the tile instead of fetching a fresh incident-local graph — so after a
+one-time prebuild the whole area can be planned with no network. The tightest
+covering tile is chosen for speed. See `backend/app/services/graph_tiles.py`.
+
+Prebuild tiles (requires network at build time only):
+
+```bash
+# One tile per active scenario, 8000 ft radius (default)
+scripts/build_operational_tiles.sh
+# Explicit centers / radius
+scripts/build_operational_tiles.sh --center 40.115,-75.343 --radius-ft 10000
+scripts/build_operational_tiles.sh --scenario-id scenario-norristown-main
 ```
 
 Enrich graph elevation:

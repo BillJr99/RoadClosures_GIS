@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
+from networkx.algorithms.flow import preflow_push
 
-from app.config import RECONCILED_HYDRANTS_GEOJSON, ROAD_GRAPH_GRAPHML
+from app.config import (
+    PERIMETER_FRACTION,
+    RECONCILED_HYDRANTS_GEOJSON,
+    ROAD_GRAPH_GRAPHML,
+    SCORING_WEIGHTS,
+)
 from app.geojson import line_feature, point_feature, read_geojson
 from app.models import IncidentPlanRequest
 from app.services.elevation import path_max_grade
 from app.services.graph_cache import graph_radius_m, load_or_fetch_graph
+from app.services.plan_cache import graph_fingerprint, load_cached_plan, plan_cache_key, save_cached_plan
 from app.services.road_matching import enrich_graph_with_county_roads
-from app.services.warning_signs import warning_sign_features
+from app.services.warning_signs import coverage_summary, device_features, warning_sign_features
 
 
 M_TO_FT = 3.28084
@@ -54,6 +61,7 @@ class HydrantCandidate:
     elevation_change_m: float
     max_grade: float
     score: float
+    score_breakdown: dict[str, float] = field(default_factory=dict)
 
 
 def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, Any]]:
@@ -73,6 +81,13 @@ def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, A
                 "radius_m": graph_radius_m(req),
                 "incident_snap_ft": round(snap_m * M_TO_FT, 1),
             }
+        tile_result = _load_operational_tile(req)
+        if tile_result is not None:
+            graph, metadata = tile_result
+            metadata["fallback_reason"] = (
+                f"configured GraphML nearest node was {round(snap_m * M_TO_FT, 1)} ft from incident"
+            )
+            return graph, metadata
         try:
             graph, metadata = load_or_fetch_graph(req)
             graph = enrich_graph_with_county_roads(graph)
@@ -86,9 +101,36 @@ def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, A
                 f"(nearest graph node is {round(snap_m * M_TO_FT, 1)} ft away), "
                 "and a local incident graph could not be loaded or fetched. Rebuild layers/graph for this area."
             ) from e
+    # No single configured artifact: prefer a prebuilt operational-area tile
+    # (offline) before fetching a fresh incident-local graph.
+    tile_result = _load_operational_tile(req)
+    if tile_result is not None:
+        return tile_result
     graph, metadata = load_or_fetch_graph(req)
     graph = enrich_graph_with_county_roads(graph)
     return graph, metadata
+
+
+def _load_operational_tile(req: IncidentPlanRequest) -> tuple[Any, dict[str, Any]] | None:
+    from app.services.graph_tiles import find_covering_tile, load_tile_graph, load_tiles
+
+    tiles = load_tiles()
+    if not tiles:
+        return None
+    study_radius_m = req.study_radius_ft * FT_TO_M
+    tile = find_covering_tile(tiles, req.lat, req.lon, study_radius_m)
+    if tile is None:
+        return None
+    graph = load_tile_graph(tile)
+    graph = enrich_graph_with_county_roads(graph)
+    return graph, {
+        "cache_hit": True,
+        "cache_key": tile.tile_id,
+        "graph_path": tile.graph_file,
+        "source": "prebuilt operational-area tile",
+        "tile_id": tile.tile_id,
+        "radius_m": tile.radius_m,
+    }
 
 
 def _transformer_to_graph(graph: Any):
@@ -130,6 +172,23 @@ def _nearest_node(graph: Any, lon: float, lat: float) -> int:
     transformer = _transformer_to_graph(graph)
     x, y = transformer.transform(lon, lat)
     return int(ox.nearest_nodes(graph, X=x, Y=y))
+
+
+def _nearest_nodes_xy(graph: Any, xs: list[float], ys: list[float]) -> list[int]:
+    """Nearest graph node for each (x, y) in graph coordinates, in one call.
+
+    Batching the snap across all surviving hydrants is far cheaper than one
+    ``nearest_nodes`` call per hydrant.
+    """
+    if not xs:
+        return []
+    import osmnx as ox
+
+    result = ox.nearest_nodes(graph, X=xs, Y=ys)
+    try:
+        return [int(n) for n in result]
+    except TypeError:  # single scalar when only one point was requested
+        return [int(result)]
 
 
 def _node_distance_m(graph: Any, node: int, x: float, y: float) -> float:
@@ -203,6 +262,54 @@ def _path_elevation_change(graph: Any, path: list[int]) -> float:
     return total
 
 
+def _hydrant_score(
+    length_m: float,
+    max_m: float,
+    curvature: float,
+    max_grade: float,
+    hydrant_snap_m: float,
+    max_snap_m: float,
+) -> tuple[float, dict[str, float]]:
+    """Composite hydrant/hose score (lower is better) from normalized terms.
+
+    Each term is normalized to ~0..1 against a sensible reference so the
+    weights in ``SCORING_WEIGHTS`` are unit-free and comparable, instead of
+    mixing raw meters with radians on one additive scale.
+    """
+    w = SCORING_WEIGHTS
+    n_length = length_m / max_m if max_m else 0.0
+    n_curvature = curvature / math.pi
+    n_grade = (abs(max_grade) / w.max_grade) if w.max_grade else 0.0
+    n_snap = hydrant_snap_m / max_snap_m if max_snap_m else 0.0
+    breakdown = {
+        "length": round(w.length * n_length, 4),
+        "curvature": round(w.curvature * n_curvature, 4),
+        "grade": round(w.grade * n_grade, 4),
+        "snap": round(w.snap * n_snap, 4),
+    }
+    return sum(breakdown.values()), breakdown
+
+
+def _within_radius_indices(
+    xs: list[float], ys: list[float], cx: float, cy: float, radius: float
+) -> list[int]:
+    """Indices of points within ``radius`` of (cx, cy).
+
+    Uses a KD-tree when SciPy is available (O(log n) spatial cull over the full
+    hydrant set) and falls back to a linear scan otherwise. Behavior is
+    identical either way; only the speed differs.
+    """
+    if not xs:
+        return []
+    try:
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(list(zip(xs, ys)))
+        return sorted(int(i) for i in tree.query_ball_point([cx, cy], radius))
+    except Exception:
+        return [i for i in range(len(xs)) if math.hypot(xs[i] - cx, ys[i] - cy) <= radius]
+
+
 def _hydrant_features() -> list[dict[str, Any]]:
     return read_geojson(RECONCILED_HYDRANTS_GEOJSON)["features"]
 
@@ -225,24 +332,44 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
             "rejected_no_path": 0,
             "rejected_non_point": 0,
         }
-    candidates: list[HydrantCandidate] = []
-    for feature in _hydrant_features():
-        if debug is not None:
-            debug["hydrant_filter"]["total_features"] += 1
+    # Project every hydrant once (batched), then spatially cull to the ones
+    # near the incident before doing any expensive snapping/routing work.
+    features = _hydrant_features()
+    transformer = _transformer_to_graph(graph)
+    lons: list[float] = []
+    lats: list[float] = []
+    kept: list[dict[str, Any]] = []
+    non_point = 0
+    for feature in features:
         lonlat = _feature_lonlat(feature)
         if lonlat is None:
-            if debug is not None:
-                debug["hydrant_filter"]["rejected_non_point"] += 1
+            non_point += 1
             continue
-        lon, lat = lonlat
-        hydrant_x, hydrant_y = _lonlat_xy(graph, lon, lat)
+        lons.append(lonlat[0])
+        lats.append(lonlat[1])
+        kept.append(feature)
+    if lons:
+        xs_arr, ys_arr = transformer.transform(lons, lats)
+        xs = [float(v) for v in xs_arr]
+        ys = [float(v) for v in ys_arr]
+    else:
+        xs, ys = [], []
+    within = _within_radius_indices(xs, ys, incident_x, incident_y, max_m * 1.35)
+    if debug is not None:
+        debug["hydrant_filter"]["total_features"] = len(features)
+        debug["hydrant_filter"]["rejected_non_point"] = non_point
+        debug["hydrant_filter"]["rejected_direct_distance"] = len(kept) - len(within)
+
+    survivor_xs = [xs[i] for i in within]
+    survivor_ys = [ys[i] for i in within]
+    survivor_nodes = _nearest_nodes_xy(graph, survivor_xs, survivor_ys)
+
+    candidates: list[HydrantCandidate] = []
+    for idx, hydrant_node in zip(within, survivor_nodes):
+        feature = kept[idx]
+        hydrant_x, hydrant_y = xs[idx], ys[idx]
         direct_distance_m = math.hypot(hydrant_x - incident_x, hydrant_y - incident_y)
-        if direct_distance_m > max_m * 1.35:
-            if debug is not None:
-                debug["hydrant_filter"]["rejected_direct_distance"] += 1
-            continue
         try:
-            hydrant_node = _nearest_node(graph, lon, lat)
             hydrant_snap_m = _node_distance_m(graph, hydrant_node, hydrant_x, hydrant_y)
             if hydrant_snap_m > max_snap_m or incident_snap_m > max_snap_m:
                 if debug is not None:
@@ -262,7 +389,7 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
         curvature = _path_curvature(graph, path)
         elev_change = _path_elevation_change(graph, path)
         max_grade = path_max_grade(graph, path)
-        score = length_m + (curvature * 75.0) + (elev_change * 2.0) + (hydrant_snap_m * 2.0)
+        score, breakdown = _hydrant_score(length_m, max_m, curvature, max_grade, hydrant_snap_m, max_snap_m)
         candidates.append(
             HydrantCandidate(
                 feature,
@@ -277,6 +404,7 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
                 elev_change,
                 max_grade,
                 score,
+                breakdown,
             )
         )
         if debug is not None:
@@ -301,13 +429,32 @@ def _class_cost(data: dict[str, Any]) -> float:
     return ROAD_CLASS_COST.get(str(highway), 3.0)
 
 
+def _sightline_penalty(data: dict[str, Any]) -> float:
+    """Visibility penalty for a road edge: 1.0 (clear) up to 5.0 (very curvy and steep).
+
+    Higher values mean drivers see the closure later, so a closure here is more
+    urgent to set up and stage with advance devices.
+    """
+    curvature = float(data.get("curvature", 0.0))
+    grade = abs(float(data.get("grade", 0.0)))
+    return 1.0 + min(curvature * 500.0, 2.0) + min(grade * 10.0, 2.0)
+
+
 def _edge_capacity(data: dict[str, Any]) -> float:
     length = float(data.get("length", 0.0))
     highway_cost = _class_cost(data)
-    curvature = float(data.get("curvature", 0.0))
-    grade = abs(float(data.get("grade", 0.0)))
-    sightline_penalty = 1.0 + min(curvature * 500.0, 2.0) + min(grade * 10.0, 2.0)
+    sightline_penalty = _sightline_penalty(data)
     return max(0.1, highway_cost * sightline_penalty + 0.15 * (length / 100.0))
+
+
+def _deployment_score(data: dict[str, Any]) -> float:
+    """Field set-up urgency for a closure edge (higher = stage first).
+
+    Combines traffic exposure (road class cost) with poor visibility
+    (sightline penalty): a busy road where the closure is hard to see is the
+    most dangerous and should be staffed and signed first.
+    """
+    return _class_cost(data) * _sightline_penalty(data)
 
 
 def _build_flow_graph(
@@ -369,7 +516,14 @@ def _hose_coords(graph: Any, hydrant: HydrantCandidate, incident_lon: float, inc
     return coords
 
 
-def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]) -> dict[str, Any]:
+def _closure_feature(
+    graph: Any,
+    rank: int,
+    u: int,
+    v: int,
+    data: dict[str, Any],
+    deployment_priority: int | None = None,
+) -> dict[str, Any]:
     source = data.get("source_data") or {}
     name = source.get("county_st_name") or source.get("name") or source.get("St_Name") or "Unnamed road"
     if isinstance(name, list):
@@ -380,6 +534,8 @@ def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]
         coords,
         {
             "rank": rank,
+            "deployment_priority": deployment_priority,
+            "deployment_label": f"P{deployment_priority}" if deployment_priority else None,
             "name": name,
             "capacity": round(capacity, 3),
             "highway": source.get("highway", "unclassified"),
@@ -394,7 +550,7 @@ def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]
             "abs_grade": source.get("abs_grade"),
             "elevation_change_m": source.get("elevation_change_m"),
             "reason": "Minimum cut closure edge; hose route protected",
-            "sightline": "caution" if capacity >= 6 else "good",
+            "sightline": "caution" if _sightline_penalty(source) > 1.5 else "good",
         },
     )
 
@@ -405,6 +561,15 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     }
     graph, graph_source = _load_graph_for_incident(req)
     debug["graph_source"] = graph_source
+
+    # Plan-result cache: same incident + parameters over the same graph returns
+    # the identical result instantly, skipping the hydrant scan and min-cut.
+    cache_key = plan_cache_key(req.model_dump(), graph_fingerprint(graph))
+    cached = load_cached_plan(cache_key)
+    if cached is not None:
+        cached["graph_source"] = {**(cached.get("graph_source") or {}), "plan_cache_hit": True}
+        return cached
+
     x, y = _incident_xy(graph, req)
     fire_node = _nearest_node(graph, req.lon, req.lat)
     debug["incident"] = {
@@ -435,6 +600,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
             "incident_snap_ft": round(item.incident_snap_m * M_TO_FT, 1),
             "direct_distance_ft": round(item.direct_distance_m * M_TO_FT, 1),
             "score": round(item.score, 3),
+            "score_breakdown": item.score_breakdown,
             "path_node_count": len(item.path),
         }
         for item in candidates[:10]
@@ -449,19 +615,52 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         incident_node = _nearest_node(graph, incident_lon, incident_lat)
         incident_nodes.extend(_nodes_within(graph, incident_x, incident_y, req.incident_radius_ft * FT_TO_M) or [incident_node])
     incident_nodes = sorted(set(incident_nodes))
-    external_nodes = _perimeter_nodes(graph, x, y, req.study_radius_ft * FT_TO_M * 0.75)
+    external_nodes = _perimeter_nodes(graph, x, y, req.study_radius_ft * FT_TO_M * PERIMETER_FRACTION)
 
     flow = _build_flow_graph(graph, incident_nodes, external_nodes, hose_edges)
-    cut_value, partition = nx.minimum_cut(flow, SUPER_SOURCE, SUPER_SINK, capacity="capacity")
+    # preflow_push is typically much faster than the default edmonds_karp on
+    # road-sized graphs; the min-cut value is unique and float capacities make
+    # tied partitions vanishingly rare.
+    cut_value, partition = nx.minimum_cut(
+        flow, SUPER_SOURCE, SUPER_SINK, capacity="capacity", flow_func=preflow_push
+    )
     reachable, non_reachable = partition
+    # If the cheapest cut still has near-infinite cost, no finite set of
+    # closures can isolate the incident without cutting the protected hose
+    # route. Surface that instead of returning a misleading closure list.
+    feasible = float(cut_value) < INF_CAP
+    feasibility_note = (
+        ""
+        if feasible
+        else "No finite closure set isolates the incident without crossing the protected hose route; widen the study radius or review the hose path."
+    )
     closures = _closure_edges(flow, set(reachable), set(non_reachable))
     ranked = sorted(closures, key=lambda item: float(item[2].get("capacity", 0.0)), reverse=True)
 
+    # Deployment priority: order closures by field set-up urgency (traffic
+    # exposure x poor visibility), tie-broken by cut capacity. This is a
+    # separate ordering from `rank` (which reflects cut cost) and tells crews
+    # which barriers and signs to stage first under limited resources.
+    deploy_order = sorted(
+        ranked,
+        key=lambda item: (_deployment_score(item[2].get("source_data") or {}), float(item[2].get("capacity", 0.0))),
+        reverse=True,
+    )
+    priority_by_edge = {(u, v): index for index, (u, v, _) in enumerate(deploy_order, start=1)}
+
     closure_features = [
-        _closure_feature(graph, rank, u, v, data)
+        _closure_feature(graph, rank, u, v, data, priority_by_edge.get((u, v)))
         for rank, (u, v, data) in enumerate(ranked, start=1)
     ]
-    warning_signs = warning_sign_features(graph, ranked, max_distance_ft=req.sign_max_distance_ft)
+    deployment_priorities = [priority_by_edge.get((u, v)) for (u, v, _) in ranked]
+    warning_signs = warning_sign_features(
+        graph,
+        ranked,
+        max_distance_ft=req.sign_max_distance_ft,
+        deployment_priorities=deployment_priorities,
+    )
+    devices = device_features(graph, ranked, deployment_priorities=deployment_priorities)
+    compliance = coverage_summary(ranked, warning_signs)
     hose_features = []
     for index, hydrant in enumerate(selected_hydrants, start=1):
         hose_features.append(
@@ -496,8 +695,10 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     debug["closure_count"] = len(closure_features)
     debug["warning_sign_count"] = len(warning_signs["features"])
 
-    return {
+    result = {
         "cut_value": round(float(cut_value), 3),
+        "feasible": feasible,
+        "feasibility_note": feasibility_note,
         "selected_hydrant": hydrant_feature,
         "selected_hydrants": {"type": "FeatureCollection", "features": hydrant_features},
         "hose_route": hose_feature,
@@ -506,9 +707,18 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         "incidents": {"type": "FeatureCollection", "features": incident_features},
         "overlays": {
             "type": "FeatureCollection",
-            "features": [*incident_features, *hydrant_features, *hose_features, *closure_features, *warning_signs["features"]],
+            "features": [
+                *incident_features,
+                *hydrant_features,
+                *hose_features,
+                *closure_features,
+                *warning_signs["features"],
+                *devices["features"],
+            ],
         },
         "warning_signs": warning_signs,
+        "devices": devices,
+        "compliance": compliance,
         "graph_source": graph_source,
         "ranked_closures": [feature["properties"] for feature in closure_features],
         "hydrant_candidates": [
@@ -523,8 +733,11 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
                 "elevation_change_ft": round(item.elevation_change_m * M_TO_FT, 1),
                 "max_grade": round(item.max_grade, 5),
                 "score": round(item.score, 3),
+                "score_breakdown": item.score_breakdown,
             }
             for item in candidates[:10]
         ],
         "_debug": debug,
     }
+    save_cached_plan(cache_key, result)
+    return result

@@ -293,6 +293,11 @@ button.primary {
   font-size: 13px;
 }
 
+.explain-box.warning {
+  border-left-color: #dc2626;
+  background: #fef2f2;
+}
+
 .confirm-row {
   grid-template-columns: 1fr auto auto;
   align-items: center;
@@ -309,6 +314,20 @@ button.primary {
 
 .closure span {
   color: #52606d;
+}
+
+.priority-badge {
+  display: inline-block;
+  min-width: 18px;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #1d4ed8;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  vertical-align: baseline;
 }
 
 .map-panel {
@@ -391,6 +410,14 @@ button.primary {
 
 .legend-swatch.sign {
   background: #a855f7;
+}
+
+.legend-swatch.barricade {
+  background: #ef4444;
+}
+
+.legend-swatch.device {
+  background: #f97316;
 }
 
 .legend-line.hose {
