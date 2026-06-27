@@ -17,7 +17,9 @@ GRAPH_TILES_DIR = GENERATED_DIR / "graph_tiles"
 PLAN_CACHE_DIR = GENERATED_DIR / "plan_cache"
 
 # Bump to invalidate cached plan results after a scoring/algorithm change.
-PLAN_CACHE_VERSION = 1
+# v2: overlay geometry now follows the road polyline (closures, hose, signs,
+# devices) instead of straight node-to-node lines.
+PLAN_CACHE_VERSION = 2
 
 
 @dataclass(frozen=True)

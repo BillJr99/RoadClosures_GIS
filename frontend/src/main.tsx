@@ -4,6 +4,7 @@ import {
   Check,
   Droplets,
   FileCheck2,
+  FileText,
   Flag,
   History,
   ChevronDown,
@@ -23,6 +24,7 @@ import "./styles.css";
 import { formatCoords } from "./format";
 import { MapView } from "./mapView";
 import { API, jsonFetch } from "./api";
+import { fetchCachedLayer } from "./layerCache";
 import { closureCsv, downloadCsv, openPrintableReport, signAndDeviceCsv } from "./export";
 import type {
   FeatureCollection,
@@ -177,11 +179,17 @@ function App() {
     sign_max_distance_ft: "1500",
   });
 
-  async function loadLayers() {
+  async function loadLayers(forceRefresh = false) {
     setLoadToast("Loading GIS data in the background...");
+    // Roads and hydrants are large, mostly-static layers, so they are served
+    // from the IndexedDB cache when a recent (<24h) copy exists and only
+    // re-downloaded when missing or stale. The dynamic records below
+    // (manual hydrants, scenarios, runs) are always fetched fresh because they
+    // change as the user edits them and loadLayers() is re-run after mutations.
+    // `forceRefresh` bypasses the cache (used right after a rebuild).
     const [roadLayer, hydrantLayer, manual, scenarioRecords, runRecords] = await Promise.all([
-      jsonFetch<FeatureCollection>(`${API}/layers/roads`),
-      jsonFetch<FeatureCollection>(`${API}/layers/hydrants`),
+      fetchCachedLayer<FeatureCollection>(`${API}/layers/roads`, undefined, { force: forceRefresh }),
+      fetchCachedLayer<FeatureCollection>(`${API}/layers/hydrants`, undefined, { force: forceRefresh }),
       jsonFetch<ManualHydrant[]>(`${API}/manual-hydrants`),
       jsonFetch<Scenario[]>(`${API}/scenarios`),
       jsonFetch<ScenarioRunListItem[]>(`${API}/scenario-runs`).catch(() => []),
@@ -273,7 +281,7 @@ function App() {
         { method: "POST" },
       );
       await pollJob(jobId);
-      await loadLayers();
+      await loadLayers(true);
       setMessage("GIS layers rebuilt.");
       setLoadToast("GIS layers rebuilt.");
     } catch (error) {
@@ -1198,6 +1206,13 @@ function App() {
                 <span>
                   {run.result_count} result(s) · {run.failed_count} failed · {run.changed_count} changed · {run.missing_count} missing
                 </span>
+                <button
+                  className="view-report-btn"
+                  title="View this run's HTML report (what / where / why) in a new window"
+                  onClick={() => window.open(`${API}/scenario-runs/${run.run_id}/report`, "_blank", "noopener,noreferrer")}
+                >
+                  <FileText size={16} /> View report
+                </button>
                 {expandedRunIds.has(run.run_id) && scenarioRun?.run_id === run.run_id && (
                   <div className="scenario-result">
                     <span>{scenarioRun.report_path}</span>
@@ -1222,7 +1237,7 @@ function App() {
 
         <section className="panel">
           <h2><Route size={18} /> Layers</h2>
-          <button onClick={loadLayers}>Reload Layers</button>
+          <button onClick={() => loadLayers()}>Reload Layers</button>
           <button onClick={buildLayers} disabled={buildBusy}>
             {buildBusy ? "Building…" : "Build From Sources"}
           </button>

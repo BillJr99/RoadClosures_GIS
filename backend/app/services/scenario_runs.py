@@ -47,6 +47,16 @@ def read_run_summary(run_id: str) -> dict[str, Any]:
     return summary
 
 
+def read_run_report_html(run_id: str) -> str:
+    """Return the run's report.html contents (the validation summary plus the
+    embedded what/where/why placement reports)."""
+    run_dir = _run_path(run_id)
+    report_path = run_dir / "report.html"
+    if not report_path.exists():
+        raise FileNotFoundError(run_id)
+    return report_path.read_text(encoding="utf-8")
+
+
 def read_scenario_plan(run_id: str, scenario_id: str) -> dict[str, Any]:
     run_dir = _run_path(run_id)
     if "/" in scenario_id or "\\" in scenario_id or scenario_id.startswith("."):

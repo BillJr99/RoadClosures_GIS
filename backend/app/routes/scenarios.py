@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Response
+from fastapi.responses import HTMLResponse
 
 from app.models import Scenario, ScenarioGolden, ScenarioGoldenIn, ScenarioIn
 from app.scenario_golden_store import delete_scenario_golden, read_scenario_golden, write_scenario_golden
 from app.scenario_store import add_scenario, delete_scenario, get_scenario, list_scenarios, update_scenario
-from app.services.scenario_runs import list_scenario_runs, promote_run, read_run_summary, read_scenario_plan
+from app.services.scenario_runs import (
+    list_scenario_runs,
+    promote_run,
+    read_run_report_html,
+    read_run_summary,
+    read_scenario_plan,
+)
 from app.services.scenario_runner import run_scenarios
 
 router = APIRouter(tags=["scenarios"])
@@ -91,6 +98,14 @@ def get_run(run_id: str) -> dict:
         return read_run_summary(run_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail="Scenario run not found") from e
+
+
+@router.get("/scenario-runs/{run_id}/report", response_class=HTMLResponse)
+def get_run_report(run_id: str) -> HTMLResponse:
+    try:
+        return HTMLResponse(content=read_run_report_html(run_id))
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail="Scenario run report not found") from e
 
 
 @router.get("/scenario-runs/{run_id}/scenarios/{scenario_id}")

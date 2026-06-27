@@ -9,6 +9,11 @@ from app.config import SCENARIO_GOLDEN_DIR, SCENARIO_RUNS_DIR, ensure_data_dirs
 from app.models import IncidentPlanRequest, Scenario, ScenarioRunSummary
 from app.scenario_golden_store import read_scenario_golden, scenario_golden_exists
 from app.scenario_store import get_scenario, list_scenarios
+from app.services.field_report import (
+    build_field_report,
+    render_field_report_html,
+    render_field_report_markdown,
+)
 from app.services.planner import plan_incident
 
 
@@ -114,6 +119,15 @@ def write_planner_debug_logs(target_dir: Path, plan: dict[str, Any]) -> None:
     (target_dir / "planner_debug.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_field_report(target_dir: Path, scenario: Any, plan: dict[str, Any]) -> dict[str, Any]:
+    """Write the what/where/why field report (JSON + Markdown) for a planner
+    result and return the structured report."""
+    report = build_field_report(scenario, plan)
+    (target_dir / "field_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (target_dir / "field_report.md").write_text(render_field_report_markdown(report), encoding="utf-8")
+    return report
+
+
 def write_planner_failure_log(target_dir: Path, request: IncidentPlanRequest, error: str) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     debug = {
@@ -201,6 +215,7 @@ def compare_to_golden(scenario_id: str, summary: dict[str, Any]) -> tuple[str, l
 def write_html_report(run_dir: Path, results: list[ScenarioRunSummary]) -> Path:
     report_path = run_dir / "report.html"
     rows = []
+    report_sections = []
     for result in results:
         ok_golden_statuses = ("matched", "missing", "expert_matched")
         status_class = "ok" if result.status == "passed" and result.golden_status in ok_golden_statuses else "warn"
@@ -214,6 +229,21 @@ def write_html_report(run_dir: Path, results: list[ScenarioRunSummary]) -> Path:
             f"<td>{result.error or ''}</td>"
             "</tr>"
         )
+        # Embed the per-scenario what/where/why placement report when available.
+        report_file = run_dir / result.scenario_id / "field_report.json"
+        if report_file.exists():
+            try:
+                report = json.loads(report_file.read_text(encoding="utf-8"))
+                report_sections.append(
+                    f"<details open><summary>{result.scenario_id}</summary>"
+                    + render_field_report_html(report)
+                    + "</details>"
+                )
+            except (json.JSONDecodeError, OSError):
+                pass
+    placement_block = ""
+    if report_sections:
+        placement_block = "<h2>Placement reports — what / where / why</h2>" + "\n".join(report_sections)
     report_path.write_text(
         """
 <!doctype html>
@@ -228,6 +258,17 @@ def write_html_report(run_dir: Path, results: list[ScenarioRunSummary]) -> Path:
     th { background: #f5f7fa; }
     .ok { color: #166534; font-weight: 700; }
     .warn { color: #b45309; font-weight: 700; }
+    details { margin: 12px 0; border: 1px solid #cbd5df; border-radius: 6px; padding: 8px 12px; }
+    summary { font-weight: 700; cursor: pointer; }
+    .field-report h3 { margin: 8px 0 4px; }
+    .field-report h4 { margin: 12px 0 4px; color: #334155; }
+    .report-list { list-style: none; padding-left: 0; }
+    .report-list > li { margin: 6px 0; padding: 6px 8px; background: #f8fafc; border-radius: 4px; }
+    .item-head { font-weight: 600; }
+    .where { color: #475569; font-size: 0.9em; }
+    .why { margin: 2px 0 0; color: #475569; font-size: 0.9em; }
+    .badge { background: #1d4ed8; color: #fff; border-radius: 4px; padding: 0 6px; font-size: 0.8em; }
+    .infeasible { color: #b45309; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -240,6 +281,9 @@ def write_html_report(run_dir: Path, results: list[ScenarioRunSummary]) -> Path:
         + """
     </tbody>
   </table>
+"""
+        + placement_block
+        + """
 </body>
 </html>
 """,
@@ -266,9 +310,11 @@ def run_scenario(
         if "ranked_closures" not in plan:
             raise ValueError("Planner output missing ranked_closures")
         summary = scenario_summary(plan)
+        field_report = write_field_report(scenario_dir, scenario, plan)
         output = {
             "scenario": scenario.model_dump(),
             "summary": summary,
+            "field_report": field_report,
             "plan": plan,
         }
         output_path = scenario_dir / "plan.json"
@@ -344,9 +390,13 @@ def save_ad_hoc_plan(req: IncidentPlanRequest, plan: dict[str, Any]) -> dict[str
     scenario_dir = run_dir / scenario_id
     scenario_dir.mkdir(parents=True, exist_ok=True)
     summary = scenario_summary(plan)
+    field_report = write_field_report(scenario_dir, scenario, plan)
     output_path = scenario_dir / "plan.json"
     output_path.write_text(
-        json.dumps({"scenario": scenario.model_dump(), "summary": summary, "plan": plan}, indent=2),
+        json.dumps(
+            {"scenario": scenario.model_dump(), "summary": summary, "field_report": field_report, "plan": plan},
+            indent=2,
+        ),
         encoding="utf-8",
     )
     (scenario_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

@@ -3,7 +3,6 @@ import {
   CircleMarker,
   GeoJSON,
   MapContainer,
-  Marker,
   Pane,
   TileLayer,
   Tooltip,
@@ -240,18 +239,34 @@ export function MapView({
             <Tooltip>Secondary incident {index + 1}</Tooltip>
           </CircleMarker>
         ))}
-        {selectedHydrantFeatures.map((feature, index) => {
-          if (feature.geometry.type !== "Point") return null;
-          const coords = feature.geometry.coordinates as [number, number];
-          const props = feature.properties ?? {};
-          return (
-            <Marker key={`selected-hydrant-${index}-${planVersion}`} title="Selected hydrant marker" position={[coords[1], coords[0]]}>
-              <Tooltip>
-                Selected hydrant {index + 1}: {String(props.name || props.source || "hydrant")}
-              </Tooltip>
-            </Marker>
-          );
-        })}
+        {selectedHydrantFeatures.length > 0 && (
+          // Highlight the chosen hydrant with a light-blue ring drawn in a
+          // high-z-index pane (above the regular hydrant dots and plan layers).
+          // Using a CircleMarker ring instead of a default Leaflet <Marker>
+          // avoids the default PNG marker icon, which Vite does not bundle and
+          // which therefore rendered as a broken image. The low fill opacity
+          // keeps the underlying hydrant location visible (emphasized, not
+          // hidden). Color matches `.legend-swatch.selected-hydrant` (#38bdf8).
+          <Pane name="selected-hydrant-pane" style={{ zIndex: 760 }}>
+            {selectedHydrantFeatures.map((feature, index) => {
+              if (feature.geometry.type !== "Point") return null;
+              const coords = feature.geometry.coordinates as [number, number];
+              const props = feature.properties ?? {};
+              return (
+                <CircleMarker
+                  key={`selected-hydrant-${index}-${planVersion}`}
+                  center={[coords[1], coords[0]]}
+                  radius={10}
+                  pathOptions={{ color: "#38bdf8", weight: 4, fillColor: "#38bdf8", fillOpacity: 0.1 }}
+                >
+                  <Tooltip>
+                    Selected hydrant {index + 1}: {String(props.name || props.source || "hydrant")}
+                  </Tooltip>
+                </CircleMarker>
+              );
+            })}
+          </Pane>
+        )}
       </MapContainer>
       {plan && (
         <div className="map-legend">

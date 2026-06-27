@@ -498,8 +498,64 @@ def _node_lonlat(graph: Any, node: int) -> tuple[float, float]:
     return float(lon), float(lat)
 
 
+def _node_xy(graph: Any, node: int) -> tuple[float, float]:
+    data = graph.nodes[node]
+    return float(data["x"]), float(data["y"])
+
+
+def _edge_attr(graph: Any, u: int, v: int) -> dict[str, Any]:
+    """Edge attribute dict for u->v (falling back to v->u), collapsing a
+    multigraph's parallel edges to the shortest one. Empty dict when absent."""
+    data = graph.get_edge_data(u, v)
+    if data is None:
+        data = graph.get_edge_data(v, u)
+    if not isinstance(data, dict) or not data:
+        return {}
+    if all(isinstance(key, int) for key in data.keys()):
+        data = min(data.values(), key=lambda item: float(item.get("length", 1.0)))
+    return data if isinstance(data, dict) else {}
+
+
+def _edge_xy_coords(
+    graph: Any, u: int, v: int, source: dict[str, Any] | None = None
+) -> list[tuple[float, float]]:
+    """Projected (x, y) vertices along the road from node u to node v.
+
+    Follows the stored OSMnx edge geometry (the curved road polyline) when it is
+    present, otherwise falls back to the straight node-to-node line. Always
+    oriented u -> v so callers can concatenate consecutive segments.
+    """
+    if source is None:
+        source = _edge_attr(graph, u, v)
+    geom = source.get("geometry") if isinstance(source, dict) else None
+    ux, uy = _node_xy(graph, u)
+    vx, vy = _node_xy(graph, v)
+    pts: list[tuple[float, float]] = []
+    if geom is not None and hasattr(geom, "coords"):
+        pts = [(float(x), float(y)) for x, y in geom.coords]
+    if len(pts) < 2:
+        return [(ux, uy), (vx, vy)]
+    # Orient the polyline u -> v regardless of how the geometry was stored.
+    if (pts[-1][0] - ux) ** 2 + (pts[-1][1] - uy) ** 2 < (pts[0][0] - ux) ** 2 + (pts[0][1] - uy) ** 2:
+        pts.reverse()
+    return pts
+
+
 def _path_coords(graph: Any, path: list[int]) -> list[list[float]]:
-    return [[*_node_lonlat(graph, node)] for node in path]
+    """Lon/lat polyline for a node path, following each edge's road geometry so
+    the line traces the actual (possibly curved) road rather than cutting
+    straight between intersections."""
+    transformer = _transformer_from_graph(graph)
+    coords: list[list[float]] = []
+    for u, v in zip(path, path[1:]):
+        for x, y in _edge_xy_coords(graph, u, v):
+            lon, lat = transformer.transform(x, y)
+            point = [float(lon), float(lat)]
+            if not coords or point != coords[-1]:
+                coords.append(point)
+    if not coords and path:
+        coords = [[*_node_lonlat(graph, path[0])]]
+    return coords
 
 
 def _hose_coords(graph: Any, hydrant: HydrantCandidate, incident_lon: float, incident_lat: float) -> list[list[float]]:
@@ -528,7 +584,11 @@ def _closure_feature(
     name = source.get("county_st_name") or source.get("name") or source.get("St_Name") or "Unnamed road"
     if isinstance(name, list):
         name = name[0]
-    coords = [[*_node_lonlat(graph, u)], [*_node_lonlat(graph, v)]]
+    transformer = _transformer_from_graph(graph)
+    coords = [
+        [float(lon), float(lat)]
+        for lon, lat in (transformer.transform(x, y) for x, y in _edge_xy_coords(graph, u, v, source))
+    ]
     capacity = float(data.get("capacity", 0.0))
     return line_feature(
         coords,

@@ -267,6 +267,14 @@ button.primary {
   min-height: 30px;
 }
 
+.view-report-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+  min-height: 30px;
+}
+
 .scenario-row.inactive {
   background: #f8fafc;
 }

@@ -252,6 +252,18 @@ scripts/run_scenarios.sh --scenario-id scenario-example
 Scenario outputs are written to `data/scenario_runs/<timestamp>/` and are
 ignored by git. To promote a reviewed run to golden summaries:
 
+> **Where runs are saved (and how to delete them).** Every scenario run —
+> whether started from `scripts/run_scenarios.sh`, the test suite, or the app —
+> is saved as a timestamped folder under **`data/scenario_runs/`** (relative to
+> the repository root, i.e. `RoadManagement-GIS/data/scenario_runs/`). Ad-hoc
+> runs triggered from the app are prefixed `adhoc-`. This directory is listed in
+> `.gitignore`, so runs are **never committed** and stay local to whichever
+> machine produced them. They are safe to remove by hand at any time when you
+> want to reclaim space or clear old results, e.g. delete individual
+> `data/scenario_runs/<timestamp>/` folders, or clear them all with
+> `rm -rf data/scenario_runs/*`. Promoted goldens live separately under
+> `data/scenario_golden/` and are **not** removed by deleting runs.
+
 ```bash
 scripts/update_scenario_golden.sh data/scenario_runs/<timestamp>
 ```

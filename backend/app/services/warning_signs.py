@@ -89,23 +89,6 @@ def _node_lonlat(graph: Any, node: int) -> tuple[float, float]:
     return float(lon), float(lat)
 
 
-def _point_upstream(graph: Any, u: int, v: int, distance_ft: float) -> tuple[float, float]:
-    from pyproj import Transformer
-
-    transformer = Transformer.from_crs(graph.graph.get("crs"), "EPSG:4326", always_xy=True)
-    a = graph.nodes[u]
-    b = graph.nodes[v]
-    ux, uy = float(a["x"]), float(a["y"])
-    vx, vy = float(b["x"]), float(b["y"])
-    dx, dy = ux - vx, uy - vy
-    norm = math.hypot(dx, dy) or 1.0
-    distance_m = distance_ft * FT_TO_M
-    x = ux + (dx / norm) * distance_m
-    y = uy + (dy / norm) * distance_m
-    lon, lat = transformer.transform(x, y)
-    return float(lon), float(lat)
-
-
 def _xy(graph: Any, node: int) -> tuple[float, float]:
     data = graph.nodes[node]
     return float(data["x"]), float(data["y"])
@@ -125,6 +108,65 @@ def _lonlat_from_xy(graph: Any, x: float, y: float) -> tuple[float, float]:
     transformer = Transformer.from_crs(graph.graph.get("crs"), "EPSG:4326", always_xy=True)
     lon, lat = transformer.transform(x, y)
     return float(lon), float(lat)
+
+
+def _edge_xy_path(graph: Any, u: int, v: int) -> list[tuple[float, float]]:
+    """Projected (x, y) vertices along the road from node u to node v, following
+    the stored OSMnx edge geometry (the curved road polyline) when present, else
+    the straight node-to-node line. Always oriented u -> v."""
+    data = graph.get_edge_data(u, v)
+    if data is None:
+        data = graph.get_edge_data(v, u)
+    edge: dict[str, Any] = {}
+    if isinstance(data, dict) and data:
+        if all(isinstance(key, int) for key in data.keys()):
+            edge = min(data.values(), key=lambda item: float(item.get("length", 1.0)))
+        else:
+            edge = data
+    geom = edge.get("geometry") if isinstance(edge, dict) else None
+    ux, uy = _xy(graph, u)
+    vx, vy = _xy(graph, v)
+    pts: list[tuple[float, float]] = []
+    if geom is not None and hasattr(geom, "coords"):
+        pts = [(float(x), float(y)) for x, y in geom.coords]
+    if len(pts) < 2:
+        return [(ux, uy), (vx, vy)]
+    if (pts[-1][0] - ux) ** 2 + (pts[-1][1] - uy) ** 2 < (pts[0][0] - ux) ** 2 + (pts[0][1] - uy) ** 2:
+        pts.reverse()
+    return pts
+
+
+def _polyline_length(points: list[tuple[float, float]]) -> float:
+    return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:]))
+
+
+def _point_at_length(points: list[tuple[float, float]], target_m: float) -> tuple[float, float]:
+    """Point a given distance (in projected meters) along a polyline."""
+    if len(points) == 1:
+        return points[0]
+    remaining = max(0.0, target_m)
+    for a, b in zip(points, points[1:]):
+        seg = math.hypot(b[0] - a[0], b[1] - a[1])
+        if remaining <= seg:
+            return _interpolate(a, b, remaining)
+        remaining -= seg
+    return points[-1]
+
+
+def _extrapolate_upstream(
+    graph: Any, previous: int, current: int, remaining_m: float
+) -> tuple[float, float]:
+    """Project `remaining_m` beyond `current`, continuing the heading of the road
+    geometry arriving from `previous` (so the projection follows the road's last
+    bearing rather than a straight node-to-node chord)."""
+    seg = _edge_xy_path(graph, previous, current)
+    (ax, ay), (bx, by) = seg[-2], seg[-1]
+    dx, dy = bx - ax, by - ay
+    norm = math.hypot(dx, dy) or 1.0
+    cx, cy = _xy(graph, current)
+    x = cx + (dx / norm) * remaining_m
+    y = cy + (dy / norm) * remaining_m
+    return _lonlat_from_xy(graph, x, y)
 
 
 def _edge_source(graph: Any, u: int, v: int) -> dict[str, Any]:
@@ -187,23 +229,25 @@ def _approach_point(
     while True:
         candidates = _approach_candidates(graph, current, previous, closure_name)
         if not candidates:
-            lon, lat = _point_upstream(graph, u, v, distance_ft)
+            lon, lat = _extrapolate_upstream(graph, previous, current, remaining_m)
             shortfall_ft = round(remaining_m * M_TO_FT, 1)
             return lon, lat, path, "limited", "insufficient upstream graph path; projected from closure segment", shortfall_ft
         next_node = candidates[0]
-        a = _xy(graph, current)
-        b = _xy(graph, next_node)
-        segment_m = math.hypot(b[0] - a[0], b[1] - a[1])
-        if remaining_m <= segment_m:
-            x, y = _interpolate(a, b, remaining_m)
-            lon, lat = _lonlat_from_xy(graph, x, y)
-            return lon, lat, [*path, next_node], "placed", "", 0.0
-        remaining_m -= segment_m
+        # Walk the approach edge along its real road geometry (curved polyline)
+        # rather than the straight chord, so the sign lands on the roadway.
+        seg = _edge_xy_path(graph, current, next_node)
+        for a, b in zip(seg, seg[1:]):
+            step_m = math.hypot(b[0] - a[0], b[1] - a[1])
+            if remaining_m <= step_m:
+                x, y = _interpolate(a, b, remaining_m)
+                lon, lat = _lonlat_from_xy(graph, x, y)
+                return lon, lat, [*path, next_node], "placed", "", 0.0
+            remaining_m -= step_m
         previous = current
         current = next_node
         path.append(current)
         if len(path) > 20:
-            lon, lat = _point_upstream(graph, u, v, distance_ft)
+            lon, lat = _extrapolate_upstream(graph, previous, current, remaining_m)
             shortfall_ft = round(remaining_m * M_TO_FT, 1)
             return lon, lat, path, "limited", "approach path search limit reached", shortfall_ft
 
@@ -323,10 +367,11 @@ def device_features(
         spacing_ft = max(20.0, speed)  # MUTCD: taper device spacing ~= speed (ft)
         device_count = max(2, int(taper_ft // spacing_ft) + 1)
 
-        # Type III barricade across the roadway at the closure midpoint.
-        ax, ay = _xy(graph, u)
-        bx, by = _xy(graph, v)
-        mid_lon, mid_lat = _lonlat_from_xy(graph, (ax + bx) / 2.0, (ay + by) / 2.0)
+        # Type III barricade across the roadway, at the geometric midpoint of the
+        # closure edge measured along the real road polyline (not the chord).
+        closure_geom = _edge_xy_path(graph, u, v)
+        mid_x, mid_y = _point_at_length(closure_geom, _polyline_length(closure_geom) / 2.0)
+        mid_lon, mid_lat = _lonlat_from_xy(graph, mid_x, mid_y)
         features.append(
             point_feature(
                 mid_lon,
@@ -347,11 +392,14 @@ def device_features(
             )
         )
 
-        # Cone/drum taper on each approach, leading up to the barricade.
+        # Cone/drum taper on each approach, leading up to the barricade. Devices
+        # follow the actual approach roadway (curved geometry, staying on the
+        # same-named road through intersections) instead of a straight chord.
+        closure_name = _road_name(source)
         for side, start, other in (("u", u, v), ("v", v, u)):
             for i in range(1, device_count + 1):
                 distance_ft = min(i * spacing_ft, taper_ft)
-                lon, lat = _point_upstream(graph, start, other, distance_ft)
+                lon, lat = _approach_point(graph, start, other, distance_ft, closure_name)[:2]
                 features.append(
                     point_feature(
                         lon,
