@@ -161,10 +161,16 @@ def warning_sign_features(
     closures: list[tuple[int, int, dict[str, Any]]],
     *,
     max_distance_ft: float | None = None,
+    deployment_priorities: list[int | None] | None = None,
 ) -> dict[str, Any]:
     features = []
     placed_keys: set[tuple[str, str, int, int]] = set()
     for closure_rank, (u, v, data) in enumerate(closures, start=1):
+        deployment_priority = (
+            deployment_priorities[closure_rank - 1]
+            if deployment_priorities is not None and closure_rank - 1 < len(deployment_priorities)
+            else None
+        )
         source = data.get("source_data") or data
         road_type = road_type_for_edge(source)
         spacing = MUTCD_TABLE_6B1[road_type]
@@ -196,6 +202,10 @@ def warning_sign_features(
                         {
                             "kind": "warning_sign",
                             "closure_rank": closure_rank,
+                            "deployment_priority": deployment_priority,
+                            "deployment_label": (
+                                f"P{deployment_priority}{sequence}" if deployment_priority else None
+                            ),
                             "closure_side": side,
                             "sequence": sequence,
                             "sign_label": "ROAD CLOSED AHEAD" if sequence == "A" else "INCIDENT AHEAD",

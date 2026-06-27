@@ -311,6 +311,20 @@ button.primary {
   color: #52606d;
 }
 
+.priority-badge {
+  display: inline-block;
+  min-width: 18px;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #1d4ed8;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  vertical-align: baseline;
+}
+
 .map-panel {
   position: relative;
   min-height: 100vh;

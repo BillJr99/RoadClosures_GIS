@@ -299,7 +299,9 @@ From a fire police review perspective, check:
 - `summary.closures`: whether the recommended closure roads make sense for
   isolating the incident and protecting the hose.
 - `plan.ranked_closures`: detailed closure reasons, road class/cost, county road
-  match fields, and sightline caution labels.
+  match fields, sightline caution labels, and a `deployment_priority`/
+  `deployment_label` (e.g. `P1`) giving the field set-up order (see
+  [Deployment Priority](#deployment-priority)).
 - `plan.overlays`: the map-ready incident, hydrant, hose, closure, and warning
   sign features.
 - `plan.warning_signs`: advisory MUTCD-based advance-warning sign candidate
@@ -531,6 +533,24 @@ speed, urban high speed, rural, or expressway/freeway. It then applies MUTCD
 Table 6B-1 A/B/C distances and traces upstream along predecessor edges to place
 candidate signs. Outputs include placement status and warning fields so a
 reviewer can see whether the graph had enough upstream path.
+
+### Deployment Priority
+
+Closures and signs carry a `deployment_priority` (1 = stage first) so crews with
+limited people and barriers know the order to set things up. This is independent
+of `rank` (which reflects min-cut cost). The priority score combines:
+
+- **traffic exposure** — the road class cost (`_class_cost`), so busier/higher
+  class roads are staged earlier; and
+- **visibility** — the sightline penalty from curvature and grade
+  (`_sightline_penalty`), so a closure drivers see late is treated as more urgent.
+
+Score is `class_cost * sightline_penalty`, tie-broken by cut capacity. Each
+closure feature gets `deployment_priority` and a `deployment_label` like `P1`.
+Each advance-warning sign inherits its parent closure's priority and gets a
+combined label such as `P1A`/`P1B`/`P1C` (priority + MUTCD sequence). The
+frontend shows these as badges in the closure and sign lists and in map
+tooltips, and they are intended to carry through to field deployment exports.
 
 ## Current Implementation Details
 

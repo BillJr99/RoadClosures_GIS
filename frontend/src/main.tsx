@@ -226,7 +226,7 @@ function offsetLineFeature(feature: GeoJSON.Feature, offset: number): GeoJSON.Fe
 
 function featureTooltip(feature: GeoJSON.Feature, fallback: string): string {
   const props = feature.properties ?? {};
-  return String(
+  const label = String(
     props.name ||
       props.county_st_name ||
       props.source ||
@@ -234,6 +234,7 @@ function featureTooltip(feature: GeoJSON.Feature, fallback: string): string {
       props.approach_road ||
       fallback,
   );
+  return props.deployment_label ? `${String(props.deployment_label)} · ${label}` : label;
 }
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -1402,7 +1403,12 @@ function App() {
               )}
               {plan.ranked_closures.map((closure, index) => (
                 <div className="closure" key={index}>
-                  <strong>#{String(closure.rank)} {String(closure.name)}</strong>
+                  <strong>
+                    {Boolean(closure.deployment_label) && (
+                      <span className="priority-badge" title="Field set-up priority (set up first)">{String(closure.deployment_label)}</span>
+                    )}
+                    #{String(closure.rank)} {String(closure.name)}
+                  </strong>
                   <span>{String(closure.reason)}</span>
                   <span>Cost {String(closure.capacity)} · {String(closure.sightline)}</span>
                   {Boolean(closure.county_st_name) && <span>County match: {String(closure.county_st_name)} ({String(closure.county_match_confidence)})</span>}
@@ -1420,6 +1426,9 @@ function App() {
                 </span>
                 {plan.warning_signs.features.slice(0, 6).map((feature, index) => (
                   <span key={index}>
+                    {Boolean(feature.properties?.deployment_label) && (
+                      <span className="priority-badge" title="Field set-up priority (set up first)">{String(feature.properties?.deployment_label)}</span>
+                    )}
                     {String(feature.properties?.sequence)} · {String(feature.properties?.approach_road)} · {String(feature.properties?.distance_from_closure_ft)} ft · {String(feature.properties?.placement_status)}
                   </span>
                 ))}

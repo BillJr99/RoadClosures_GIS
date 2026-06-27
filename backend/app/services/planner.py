@@ -301,13 +301,32 @@ def _class_cost(data: dict[str, Any]) -> float:
     return ROAD_CLASS_COST.get(str(highway), 3.0)
 
 
+def _sightline_penalty(data: dict[str, Any]) -> float:
+    """Visibility penalty for a road edge: 1.0 (clear) up to 5.0 (very curvy and steep).
+
+    Higher values mean drivers see the closure later, so a closure here is more
+    urgent to set up and stage with advance devices.
+    """
+    curvature = float(data.get("curvature", 0.0))
+    grade = abs(float(data.get("grade", 0.0)))
+    return 1.0 + min(curvature * 500.0, 2.0) + min(grade * 10.0, 2.0)
+
+
 def _edge_capacity(data: dict[str, Any]) -> float:
     length = float(data.get("length", 0.0))
     highway_cost = _class_cost(data)
-    curvature = float(data.get("curvature", 0.0))
-    grade = abs(float(data.get("grade", 0.0)))
-    sightline_penalty = 1.0 + min(curvature * 500.0, 2.0) + min(grade * 10.0, 2.0)
+    sightline_penalty = _sightline_penalty(data)
     return max(0.1, highway_cost * sightline_penalty + 0.15 * (length / 100.0))
+
+
+def _deployment_score(data: dict[str, Any]) -> float:
+    """Field set-up urgency for a closure edge (higher = stage first).
+
+    Combines traffic exposure (road class cost) with poor visibility
+    (sightline penalty): a busy road where the closure is hard to see is the
+    most dangerous and should be staffed and signed first.
+    """
+    return _class_cost(data) * _sightline_penalty(data)
 
 
 def _build_flow_graph(
@@ -369,7 +388,14 @@ def _hose_coords(graph: Any, hydrant: HydrantCandidate, incident_lon: float, inc
     return coords
 
 
-def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]) -> dict[str, Any]:
+def _closure_feature(
+    graph: Any,
+    rank: int,
+    u: int,
+    v: int,
+    data: dict[str, Any],
+    deployment_priority: int | None = None,
+) -> dict[str, Any]:
     source = data.get("source_data") or {}
     name = source.get("county_st_name") or source.get("name") or source.get("St_Name") or "Unnamed road"
     if isinstance(name, list):
@@ -380,6 +406,8 @@ def _closure_feature(graph: Any, rank: int, u: int, v: int, data: dict[str, Any]
         coords,
         {
             "rank": rank,
+            "deployment_priority": deployment_priority,
+            "deployment_label": f"P{deployment_priority}" if deployment_priority else None,
             "name": name,
             "capacity": round(capacity, 3),
             "highway": source.get("highway", "unclassified"),
@@ -457,11 +485,28 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     closures = _closure_edges(flow, set(reachable), set(non_reachable))
     ranked = sorted(closures, key=lambda item: float(item[2].get("capacity", 0.0)), reverse=True)
 
+    # Deployment priority: order closures by field set-up urgency (traffic
+    # exposure x poor visibility), tie-broken by cut capacity. This is a
+    # separate ordering from `rank` (which reflects cut cost) and tells crews
+    # which barriers and signs to stage first under limited resources.
+    deploy_order = sorted(
+        ranked,
+        key=lambda item: (_deployment_score(item[2].get("source_data") or {}), float(item[2].get("capacity", 0.0))),
+        reverse=True,
+    )
+    priority_by_edge = {(u, v): index for index, (u, v, _) in enumerate(deploy_order, start=1)}
+
     closure_features = [
-        _closure_feature(graph, rank, u, v, data)
+        _closure_feature(graph, rank, u, v, data, priority_by_edge.get((u, v)))
         for rank, (u, v, data) in enumerate(ranked, start=1)
     ]
-    warning_signs = warning_sign_features(graph, ranked, max_distance_ft=req.sign_max_distance_ft)
+    deployment_priorities = [priority_by_edge.get((u, v)) for (u, v, _) in ranked]
+    warning_signs = warning_sign_features(
+        graph,
+        ranked,
+        max_distance_ft=req.sign_max_distance_ft,
+        deployment_priorities=deployment_priorities,
+    )
     hose_features = []
     for index, hydrant in enumerate(selected_hydrants, start=1):
         hose_features.append(

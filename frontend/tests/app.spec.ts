@@ -271,7 +271,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
             {
               type: "Feature",
               geometry: { type: "LineString", coordinates: [[-75.306, 40.214], [-75.307, 40.215]] },
-              properties: { rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good" },
+              properties: { rank: 1, deployment_priority: 1, deployment_label: "P1", name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good" },
             },
           ],
         },
@@ -292,12 +292,12 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
             {
               type: "Feature",
               geometry: { type: "Point", coordinates: [-75.308, 40.214] },
-              properties: { kind: "warning_sign", sequence: "A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
+              properties: { kind: "warning_sign", sequence: "A", deployment_priority: 1, deployment_label: "P1A", approach_road: "Main St", distance_from_closure_ft: 100, placement_status: "placed" },
             },
           ],
         },
         graph_source: { cache_hit: true, cache_key: "test" },
-        ranked_closures: [{ rank: 1, name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good", county_st_name: "Main St", county_match_confidence: 0.9 }],
+        ranked_closures: [{ rank: 1, deployment_priority: 1, deployment_label: "P1", name: "Main St", reason: "Minimum cut closure edge", capacity: 3.2, sightline: "good", county_st_name: "Main St", county_match_confidence: 0.9 }],
         hydrant_candidates: [],
         run_id: "adhoc-20260624T120001Z",
         scenario_id: "adhoc-20260624T120001Z",
@@ -396,6 +396,8 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await expect(page.getByText(/Recommendation summary/i)).toBeVisible();
   await expect(page.getByText(/drawn in red on the map/i)).toBeVisible();
   await expect(page.getByText("#1 Main St")).toBeVisible();
+  await expect(page.locator(".closure .priority-badge").filter({ hasText: "P1" }).first()).toBeVisible();
+  await expect(page.locator(".priority-badge").filter({ hasText: "P1A" })).toBeVisible();
   expect(planCalled).toBe(true);
   expect(lastPlanBody?.hydrant_count).toBe(1);
   expect(lastPlanBody?.hose_max_ft).toBe(650);
