@@ -38,3 +38,20 @@ def test_job_status_route_404_for_unknown() -> None:
     with pytest.raises(HTTPException) as exc:
         job_status("does-not-exist")
     assert exc.value.status_code == 404
+
+
+def test_build_job_route_returns_pending_handle(monkeypatch) -> None:
+    # The build route should hand back a job id without running the (network-
+    # bound) build inline.
+    from app.routes import jobs as jobs_route
+
+    captured = {}
+
+    def fake_start(kind, fn):
+        captured["kind"] = kind
+        return "fake-job-id"
+
+    monkeypatch.setattr(jobs_route.jobs, "start_job", fake_start)
+    response = jobs_route.start_build_job(include_graph=True)
+    assert response == {"job_id": "fake-job-id", "status": "pending"}
+    assert captured["kind"] == "build"

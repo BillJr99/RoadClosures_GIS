@@ -404,9 +404,9 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   expect(buildCalled).toBe(true);
 
   await page.getByRole("button", { name: /Recommend Closures/i }).click();
-  await expect(page.locator(".toast").filter({ hasText: /Running closure recommendations/i })).toBeVisible();
+  // Assert persistent UI state, not the transient toasts (which auto-clear on a
+  // 4.5s timer and race the assertion in CI).
   await expect(page.locator(".inline-status").filter({ hasText: /Plan ready/i })).toBeVisible();
-  await expect(page.locator(".toast").filter({ hasText: /Recommendations ready/i })).toBeVisible();
   await expect(page.getByText(/Recommendation run: 1 result/i)).toBeVisible();
   await expect(page.getByText(/Recommendation summary/i)).toBeVisible();
   await expect(page.getByText(/drawn in red on the map/i)).toBeVisible();
@@ -429,6 +429,9 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   // Assert the functional outcome (re-run with an extra hydrant) rather than the
   // transient toast, which fades on a timer and races the assertion.
   await expect.poll(() => lastPlanBody?.hydrant_count).toBe(2);
+  // Wait for the re-run to fully settle (button re-enables when planning ends)
+  // so its late response can't overwrite the removal message below.
+  await expect(page.getByRole("button", { name: /Add Hydrant/i })).toBeEnabled();
 
   await page.getByRole("button", { name: /Clear Incident/i }).click();
   await expect(page.getByText(/Remove this incident and clear recommendations/i)).toBeVisible();
