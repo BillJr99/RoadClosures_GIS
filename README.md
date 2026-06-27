@@ -469,6 +469,19 @@ The ranked closure list is not an order from the app. It is a suggested set of
 control points for review by incident command, fire police, police, and any
 agency with roadway authority.
 
+### Multiple (Secondary) Incidents
+
+A single scene can have more than one point to isolate. After placing the primary
+incident, use **Add secondary incident** and click the map to add another. All
+incident dots are red and **numbered** (1 = primary, 2, 3, … in placement order).
+Adding a secondary incident **re-runs the recommendations automatically** for the
+whole set: the closure min-cut isolates *all* incident areas at once (each is a
+sink in the same cut) while still protecting the hose route, and advance signs and
+devices are generated for the combined closure set. The Resource Availability
+counts scale to the larger plan automatically when you have not capped them, and
+otherwise stay at the limits you set (see
+[Resource Availability](#resource-availability-limited-resource-deployment)).
+
 ### MUTCD Advisory Warning Signs
 
 The planner emits advisory advance-warning sign candidates using defaults from
@@ -512,26 +525,58 @@ If that file is absent, it uses an incident-local cache under
 Hydrants are loaded from the reconciled hydrant GeoJSON, which combines
 authority, OSM, and manual sources.
 
-### Hydrant Routing Algorithm
+### Hydrant Selection Algorithm
 
-For each hydrant, the planner snaps the hydrant and incident to nearest graph
-nodes. It then uses NetworkX shortest path over edge `length` to estimate the
-hose route. Candidates over `hose_max_ft` are rejected.
+The planner does **not** simply take the nearest hydrant. It takes the best
+hydrant **whose full hose run fits within the hose envelope** (`hose_max_ft`,
+configurable from the UI Configuration pulldown), and among those it **favors a
+straighter run** — preferring a farther but straight hydrant over a closer one
+reached only through sharp turns.
 
-The hydrant score is a weighted sum of **normalized** terms (lower is better):
+**Reachability — the hose envelope is the only distance limit.** For each
+hydrant the planner snaps the hydrant and the incident to their nearest graph
+nodes and computes the NetworkX shortest path over edge `length`. The full hose
+run is
 
 ```text
-score = w_length   * (length_m / hose_max_m)
-      + w_curvature * (curvature_radians / pi)
-      + w_grade     * (max_grade / MAX_GRADE)
-      + w_snap      * (hydrant_snap_m / max_snap_m)
+hose_run = road_path_length + hydrant_to_road_gap + road_to_incident_gap
 ```
 
-Normalizing each term to roughly 0..1 before weighting keeps the weights
-unit-free and comparable (instead of mixing raw meters with radians). The
-weights live in `ScoringWeights` in `backend/app/config.py`. The planner returns
-a per-candidate `score_breakdown` (the normalized contribution of each term) so a
-reviewer can see *why* one hydrant beat another.
+i.e. the on-road path plus the short off-road "snap" gap at each end. A hydrant
+is reachable **iff `hose_run <= hose_max_ft`**. There is no separate hard-coded
+maximum snap/standoff distance — the snap gaps are simply part of the hose run,
+so the single configurable hose envelope governs reachability. (Earlier versions
+applied a hidden 250 ft snap cap that could reject a perfectly reachable hydrant
+whenever the incident or hydrant sat more than 250 ft from a mapped road; that
+cap has been removed.)
+
+**Selection — straighter is better.** Among reachable hydrants, the planner picks
+the lowest score, a weighted sum of **normalized** terms (lower is better):
+
+```text
+score = w_length    * (hose_run / hose_max)        # shorter is better
+      + w_curvature  * (curvature_radians / pi)     # straighter is better
+      + w_grade      * (max_grade / MAX_GRADE)       # flatter is better
+```
+
+Each term is normalized to roughly 0..1 so the weights are unit-free and
+comparable. Curvature is weighted **as heavily as length** (`w_curvature == w_length`),
+which is what lets a longer-but-straight run beat a shorter-but-twisty one; raise
+`curvature` further in `ScoringWeights` (`backend/app/config.py`) to favor
+straightness even more. The off-road snap gaps are already inside `hose_run`, so
+they are not scored a second time. The planner returns a per-candidate
+`score_breakdown` (the normalized contribution of each term) so a reviewer can see
+*why* one hydrant beat another.
+
+**Which road graph is used.** Snapping and routing need a road graph that
+actually covers the incident. The planner uses the configured
+`data/generated/road_graph.graphml` only when the incident snaps within
+`CONFIGURED_GRAPH_SNAP_TOLERANCE_FT` (default 300 ft, `backend/app/config.py`) of a
+road in it — a *data-coverage* check, distinct from hose reach. If the incident is
+outside that artifact's coverage (the artifact may only cover one municipality),
+the planner falls through to a prebuilt operational-area tile or a freshly fetched
+incident-local graph (see [Routing Graph Strategy](#routing-graph-strategy)) so a
+small artifact is never misused for incidents it does not cover.
 
 ### Curvature Algorithm
 
@@ -668,6 +713,38 @@ combined label such as `P1A`/`P1B`/`P1C` (priority + MUTCD sequence). The
 frontend shows these as badges in the closure and sign lists and in map
 tooltips, and they are intended to carry through to field deployment exports.
 
+### Resource Availability (limited-resource deployment)
+
+Real incidents rarely have unlimited barriers, cones, signs, or people. The
+**Resource Availability** controls in the Configuration pulldown let the planner
+show only what can actually be staged, using the deployment priority above to
+decide *which* items make the cut. Each control is a number stepper (−/＋ or
+type-in):
+
+- **Road closures**, **Barricades**, **Channelizing devices**, and **Signs** —
+  how many of each you have available.
+
+The counts are a **sticky inventory**: they initialize from the current plan's
+totals (so everything shows by default) and then persist across subsequent plans
+instead of resetting, so "I have 4 barricades" stays set. The map updates in real
+time as you change them; each control shows "N of TOTAL shown".
+
+Filtering is hierarchical and cascades, matching how crews actually scale back:
+
+1. **Road closures** are limited first. The deployed set is the top-N closures by
+   deployment priority; the **lowest-priority closures are dropped first**.
+2. Dropping a closure **frees the resources tied to it** — its advance-warning
+   signs, channelizing-device taper, and barricade (matched by `closure_rank`)
+   are removed from the map along with the closure itself.
+3. The per-type caps (barricades / channelizing / signs) then apply to whatever
+   remains on the still-deployed closures, again keeping the highest-priority
+   items.
+
+Raising the closure count **restores** a closure and re-deploys its associated
+resources, up to the per-type maxima still set in the panel. This is a display/
+planning aid built from the plan the UI already holds; it does not change the
+underlying plan or the CSV/print exports.
+
 ### Performance
 
 - **Hydrant pre-filter**: hydrants are projected once (batched) and culled with a
@@ -696,6 +773,35 @@ Long operations run as background jobs so the UI stays responsive:
 The frontend submits the build job and polls until completion, showing a
 "Building…" state. Jobs are in-memory and process-local
 (`backend/app/services/jobs.py`).
+
+### GIS Data Controls (Layers panel)
+
+The sidebar Layers panel has three distinct data actions plus a browser-side
+cache. They are easy to confuse, so here is exactly what each does:
+
+- **Refresh Layers** — re-fetches the displayed map layers, scenarios, and runs
+  from the server into the view. The large road and hydrant layers are served
+  from the **local browser cache** when a recent copy exists (see below), so this
+  is fast and does not necessarily hit the network for them. Use it to pull in
+  edits (e.g. new scenarios/manual hydrants) without a full re-download.
+- **Update Cache** — forces a fresh **re-download** of the road and hydrant
+  layers from the server and overwrites the local browser cache. Use it when you
+  know the server-side data changed and you want the newest copy now (it bypasses
+  the cache rather than waiting for it to expire).
+- **Rebuild GIS Data** — regenerates the road, hydrant, and routing-graph data on
+  the **server** from the upstream sources (OSM + county layers) via the
+  background build job above. This is the heavy operation that changes the
+  underlying data; afterwards the frontend force-refreshes so the new data is not
+  masked by the cache.
+
+**Browser layer cache.** The road and hydrant layers (the hydrants GeoJSON is
+~2 MB) are cached in the browser using **IndexedDB** so a page reload reuses a
+recent copy instead of re-downloading (`frontend/src/layerCache.ts`). The cache
+has a hard **7-day** expiration (`LAYER_CACHE_TTL_MS`); after that an entry is
+considered stale and re-fetched. When layers are served from this cache, the
+data-load status toast notes it and how old the cached copy is. "Update Cache"
+and "Rebuild GIS Data" both bypass/replace the cache. The cache is resilient: if
+IndexedDB is unavailable it silently falls back to a normal network fetch.
 
 ### Field-Deployment Exports and Explainability
 
