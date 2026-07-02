@@ -1,0 +1,16 @@
+# Normalize line endings so checkouts are identical on every OS and git config.
+# Without this, a clone with core.autocrlf=true (Windows default) rewrites files
+# to CRLF on checkout, which then shows up as phantom "modified" files and makes
+# every `git pull` collide. Force LF for all text; git auto-detects binary.
+* text=auto eol=lf
+
+# Explicit binaries (never touch their bytes).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
