@@ -31,6 +31,8 @@ import { fetchCachedLayerMeta } from "./layerCache";
 import { closureCsv, downloadCsv, openPrintableReport, signAndDeviceCsv } from "./export";
 import { filterPlanResources, resourceTotals, type ResourceCounts, type ResourceType } from "./resourcePriority";
 import { planStatusMessages } from "./planStatus";
+import { PlanProgress } from "./PlanProgress";
+import { recordPlanDuration } from "./planProgress";
 import type {
   FeatureCollection,
   GoldenDraft,
@@ -452,6 +454,7 @@ function App() {
     setMessage("Calculating closure recommendations. This can take 10-30 seconds.");
     setPlannerStatus("Calculating closure recommendations...");
     setLoadToast("Running closure recommendations...");
+    const planStartedAt = Date.now();
     try {
       const result = await jsonFetch<PlanResponse>(`${API}/plan`, {
         method: "POST",
@@ -467,6 +470,12 @@ function App() {
           sign_max_distance_ft: signMax,
         }),
       });
+      // Learn the ETA only from real computations: skip plan-cache hits (which
+      // return near-instantly). recordPlanDuration itself ignores sub-threshold
+      // durations, so a trivially fast plan never poisons the estimate.
+      if (result.graph_source?.plan_cache_hit !== true) {
+        recordPlanDuration(Date.now() - planStartedAt);
+      }
       setPlan(result);
       setPlanVersion((version) => version + 1);
       if (result.run_id && result.scenario_id) {
@@ -1161,7 +1170,8 @@ function App() {
           <button className="primary" onClick={() => runPlan()} disabled={!incident || isPlanning}>
             <ShieldAlert size={18} /> {isPlanning ? "Recommending..." : "Recommend Closures"}
           </button>
-          {plannerStatus && <div className="inline-status">{plannerStatus}</div>}
+          <PlanProgress active={isPlanning} />
+          {plannerStatus && !isPlanning && <div className="inline-status">{plannerStatus}</div>}
           {planWarnings.length > 0 && (
             <div className="plan-warning" role="alert">
               {planWarnings.map((warning, index) => (

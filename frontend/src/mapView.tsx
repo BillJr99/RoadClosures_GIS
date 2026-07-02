@@ -206,6 +206,14 @@ export function MapView({
   );
   const incidentsRef = React.useRef<Incident[]>(incidents);
   incidentsRef.current = incidents;
+  // Render the incident and selected-hydrant markers with SVG instead of the
+  // map's default canvas. A canvas renderer paints a single full-map rectangle;
+  // in a high-z-index pane that rectangle has pointer-events and swallows every
+  // mouse event, blocking hover tooltips (and their distance-to-incident text)
+  // on the hydrant layer beneath. An SVG pane only captures events on the drawn
+  // shapes, so hover passes through empty space to the hydrants below.
+  const incidentRenderer = React.useMemo(() => L.svg({ pane: "incident-pane" }), []);
+  const selectedHydrantRenderer = React.useMemo(() => L.svg({ pane: "selected-hydrant-pane" }), []);
   return (
     <section className="map-panel">
       {loadToast && <div className="toast">{loadToast}</div>}
@@ -298,6 +306,7 @@ export function MapView({
             <CircleMarker
               center={[incident.lat, incident.lon]}
               radius={11}
+              renderer={incidentRenderer}
               pathOptions={{ bubblingMouseEvents: true, className: "incident-marker", color: "#b42318", fillColor: "#c83525", fillOpacity: 0.9, weight: 3 }}
               eventHandlers={{
                 click() {
@@ -312,6 +321,7 @@ export function MapView({
                 key={`secondary-${item.lat}-${item.lon}-${index}`}
                 center={[item.lat, item.lon]}
                 radius={11}
+                renderer={incidentRenderer}
                 pathOptions={{ className: "incident-marker", color: "#b42318", fillColor: "#c83525", fillOpacity: 0.9, weight: 3 }}
               >
                 <Tooltip permanent direction="center" className="incident-number">{index + 2}</Tooltip>
@@ -341,6 +351,7 @@ export function MapView({
                   key={`selected-hydrant-${index}-${planVersion}`}
                   center={[coords[1], coords[0]]}
                   radius={10}
+                  renderer={selectedHydrantRenderer}
                   pathOptions={{ color: ringColor, weight: 4, fillColor: ringColor, fillOpacity: 0.1 }}
                 >
                   <Tooltip>
