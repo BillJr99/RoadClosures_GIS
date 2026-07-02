@@ -15,6 +15,7 @@ playwright-report/
 backend/data/generated/
 data/generated/
 data/scenario_runs/
+data/logs/
 output/
 test_output/
 *.log

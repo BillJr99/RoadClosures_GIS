@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -9,6 +10,8 @@ from typing import Any, Callable
 from app.config import GRAPH_CACHE_DIR, ensure_data_dirs
 from app.models import IncidentPlanRequest
 
+
+logger = logging.getLogger("app.services.graph_cache")
 
 GRAPH_CACHE_VERSION = "v1"
 FT_TO_M = 1.0 / 3.28084
@@ -52,6 +55,14 @@ def load_or_fetch_graph(
         return graph, metadata
 
     radius_m = graph_radius_m(req)
+    logger.info(
+        "Graph cache miss (key=%s); fetching %s network within %.0f m of (%.6f, %.6f)",
+        key,
+        network_type,
+        radius_m,
+        req.lat,
+        req.lon,
+    )
     if fetcher is None:
         graph = ox.graph_from_point((req.lat, req.lon), dist=radius_m, network_type=network_type, simplify=True)
         graph = ox.project_graph(graph)

@@ -306,6 +306,20 @@ button.primary {
   background: #fef2f2;
 }
 
+.plan-warning {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 13px;
+}
+
+.plan-warning p {
+  margin: 0;
+}
+
 .confirm-row {
   grid-template-columns: 1fr auto auto;
   align-items: center;
@@ -472,6 +486,11 @@ button.primary {
 .legend-swatch.selected-hydrant {
   border: 2px solid #1f2933;
   background: #38bdf8;
+}
+
+.legend-swatch.envelope-exceeded {
+  border: 2px solid #1f2933;
+  background: #f59e0b;
 }
 
 .legend-swatch.sign {

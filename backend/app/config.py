@@ -45,12 +45,16 @@ SCENARIO_EXPERT_GOLDEN_DIR = SCENARIO_DIR / "goldens"
 GRAPH_CACHE_DIR = GENERATED_DIR / "graph_cache"
 GRAPH_TILES_DIR = GENERATED_DIR / "graph_tiles"
 PLAN_CACHE_DIR = GENERATED_DIR / "plan_cache"
+LOGS_DIR = DATA_ROOT / "logs"
+BACKEND_LOG_FILE = LOGS_DIR / "backend.log"
 
 # Bump to invalidate cached plan results after a scoring/algorithm change.
 # v2: overlay geometry now follows the road polyline (closures, hose, signs,
 # devices) instead of straight node-to-node lines.
 # v3: closure min-cut is distance-weighted toward the incident (tight cordon).
-PLAN_CACHE_VERSION = 3
+# v4: hose routing is undirected (one-way streets no longer block hoses) and
+# plans fall back to the nearest road-reachable hydrants beyond the envelope.
+PLAN_CACHE_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -136,3 +140,4 @@ def ensure_data_dirs() -> None:
     SCENARIO_RUNS_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_EXPERT_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)

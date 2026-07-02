@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -10,6 +11,8 @@ from app.geojson import point_feature, read_geojson, write_geojson
 from app.manual_store import manual_hydrants_geojson
 from app.services.arcgis import fetch_geojson_features, layer_info
 
+
+logger = logging.getLogger("app.services.hydrants")
 
 DEDUP_TOLERANCE_DEG = 0.0001
 
@@ -180,7 +183,7 @@ def generate_hydrant_layers(bbox: tuple[float, float, float, float] = SOURCES.bb
         try:
             authoritative += fetch_osm_hydrants(bbox, session=session)
         except Exception as e:
-            print(f"[hydrants] OSM Overpass unavailable; continuing with authority/manual sources: {e}")
+            logger.warning("OSM Overpass unavailable; continuing with authority/manual sources: %s", e)
     write_geojson(AUTHORITATIVE_HYDRANTS_GEOJSON, authoritative)
     manual_payload = manual_hydrants_geojson(MANUAL_HYDRANTS_GEOJSON)
     manual = manual_payload["features"]

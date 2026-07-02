@@ -118,6 +118,36 @@ When CORS is opened to all sources, credentialed requests are disabled
 automatically (the CORS spec forbids `*` with credentials; the frontend uses plain
 fetches, so this is fine).
 
+### Backend logging
+
+The backend logs comprehensively to a rotating log file for after-the-fact
+debugging: `data/logs/backend.log` (5 MB per file, 5 rotated backups kept,
+ignored by git). Logging is configured in `backend/app/logging_setup.py` at
+app startup and also mirrors uvicorn's server/access logs into the same file,
+so one file tells the whole story of a request:
+
+- every `/plan` request with its parameters, duration, and outcome (success
+  with closure/warning counts, 422 with the reason, or an unexpected-crash
+  traceback)
+- which road graph was used (configured artifact, tile, cache, or fresh OSM
+  fetch) and why a fallback was taken
+- the hydrant filter counters (total checked, accepted, rejected by
+  straight-line distance / route length / no road path) and the
+  envelope-exceeded fallback when it triggers
+- min-cut results and infeasibility warnings, background job start/finish/
+  failure (with tracebacks), and GIS data-source fetch progress/failures
+
+Environment overrides:
+
+```bash
+LOG_LEVEL=DEBUG   # default INFO
+LOG_FILE=/var/log/firepolice/backend.log   # default data/logs/backend.log
+```
+
+Per-run planner failure details also continue to be written under
+`data/scenario_runs/<run>/planner_debug.{json,log}`, and every plan response
+carries a `_debug` block with the same diagnostics the log records.
+
 ## Rebuilding GIS Data
 
 Generated road and hydrant artifacts live under `data/generated/` and are
@@ -173,14 +203,20 @@ scripts/test_all.sh
 
 The script runs:
 
-- backend unit/API tests with `pytest`
+- backend unit/API tests with `pytest`, including hydrant reachability over
+  one-way streets (undirected hose routing) and the envelope-exceeded fallback
+  path (`backend/tests/test_planner_hydrant_routing.py`)
 - frontend unit tests with `vitest`
 - frontend production build with Vite/TypeScript
 - Playwright browser orchestration tests that mock API responses and exercise
   layer loading, address search, manual hydrant add/edit/remove, the background
   rebuild job, scenario CRUD/run controls, closure recommendation rendering with
-  deployment-priority badges and MUTCD codes, hydrant explainability, and CSV
-  export
+  deployment-priority badges and MUTCD codes, hydrant explainability, CSV
+  export, and the hose-envelope warning banner with the amber fallback hydrant
+  legend
+
+All of these run offline (no live GIS services needed) and run in CI on every
+push and pull request (`.github/workflows/ci.yml`).
 
 If Playwright browsers are missing, install them once:
 
@@ -424,6 +460,32 @@ straight-line distance. It scores reachable hydrants by:
 
 A farther hydrant can win if it gives a straighter, flatter, more practical hose
 run within the maximum hose distance.
+
+Hose routes are computed over an **undirected** view of the road graph: a hose
+is laid on the ground and does not obey one-way restrictions, so a hydrant on a
+one-way street pointing away from the incident is still reachable. (Closure
+recommendations still use the directed graph, because traffic does obey one-way
+restrictions.)
+
+### When No Hydrant Fits the Hose Envelope
+
+If no hydrant's hose run fits within `hose_max_ft`, the planner does not fail.
+It falls back to the nearest road-reachable hydrant(s) — crews still need the
+closest water source for relay pumping or tanker shuttle — and:
+
+- returns the full plan with a `warnings` list explaining what was checked
+  (how many hydrants, how many were too far in a straight line, how many had
+  hose routes that were too long, how many were unreachable by road) and how
+  far the closest hose run exceeds the envelope;
+- flags the fallback hydrants and hose routes with `exceeds_envelope: true`
+  and a `hose_deficit_ft` value;
+- shows an amber warning banner in the sidebar and draws the selected hydrant
+  ring amber instead of light blue (see the map legend entry "Hydrant beyond
+  hose envelope").
+
+The request only fails (HTTP 422) when there is no road-reachable hydrant at
+all within the study radius, or when no road graph covers the incident
+location.
 
 ### Curvy Roads and Hose Runs
 

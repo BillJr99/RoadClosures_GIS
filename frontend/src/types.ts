@@ -32,6 +32,13 @@ export type PlanResponse = {
   cut_value: number;
   feasible?: boolean;
   feasibility_note?: string;
+  warnings?: string[];
+  hose_envelope?: {
+    satisfied: boolean;
+    hose_max_ft: number;
+    nearest_hydrant_ft?: number;
+    hydrant_filter?: Record<string, number>;
+  };
   selected_hydrant: GeoJSON.Feature;
   selected_hydrants?: FeatureCollection;
   hose_route: GeoJSON.Feature;

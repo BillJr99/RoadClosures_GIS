@@ -2,8 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import cors_allow_origins
+from app.logging_setup import configure_logging
 from app.routes import jobs, layers, manual_hydrants, planner, scenarios
 
+
+configure_logging()
 
 app = FastAPI(title="Fire Police GIS Cordon Planner")
 
