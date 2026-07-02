@@ -381,7 +381,11 @@ def save_ad_hoc_plan(req: IncidentPlanRequest, plan: dict[str, Any]) -> dict[str
         incident_radius_ft=req.incident_radius_ft,
         study_radius_ft=req.study_radius_ft,
         hose_max_ft=req.hose_max_ft,
-        reviewer_notes="Saved from Recommend Closures",
+        reviewer_notes=(
+            "Saved from Recommend Closures (hose envelope exceeded)"
+            if plan.get("warnings")
+            else "Saved from Recommend Closures"
+        ),
         expected_hydrant_hint="",
         expected_closure_hint="",
         status="active",

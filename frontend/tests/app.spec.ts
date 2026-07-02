@@ -495,3 +495,62 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await page.getByRole("button", { name: /Remove/i }).click();
   await expect(page.getByText(/Incident removed/i)).toBeVisible();
 });
+
+test("shows a warning banner and amber hydrant ring when the hose envelope is exceeded", async ({ page }) => {
+  const envelopeWarning =
+    "No hydrant is reachable within the 300 ft hose envelope. Checked 1 hydrant feature(s): 0 beyond straight-line range, 1 with hose routes too long, 0 unreachable by road. Showing the 1 nearest road-reachable hydrant(s) instead; the closest hose run is 656 ft (356 ft over the envelope).";
+  const fallbackHydrant = {
+    ...hydrants.features[0],
+    properties: {
+      ...hydrants.features[0].properties,
+      selected: true,
+      sequence: 1,
+      exceeds_envelope: true,
+      hose_deficit_ft: 356,
+    },
+  };
+
+  await page.route("**/api/layers/roads", (route) => route.fulfill({ json: roads }));
+  await page.route("**/api/layers/hydrants", (route) => route.fulfill({ json: hydrants }));
+  await page.route("**/api/manual-hydrants", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/scenarios", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/scenario-runs", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/plan", (route) =>
+    route.fulfill({
+      json: {
+        cut_value: 3.2,
+        warnings: [envelopeWarning],
+        hose_envelope: { satisfied: false, hose_max_ft: 300, nearest_hydrant_ft: 656 },
+        selected_hydrant: fallbackHydrant,
+        selected_hydrants: { type: "FeatureCollection", features: [fallbackHydrant] },
+        hose_route: {
+          type: "Feature",
+          geometry: { type: "LineString", coordinates: [[-75.305, 40.215], [-75.304, 40.216]] },
+          properties: { length_ft: 656, exceeds_envelope: true, hose_deficit_ft: 356 },
+        },
+        closures: { type: "FeatureCollection", features: [] },
+        overlays: { type: "FeatureCollection", features: [fallbackHydrant] },
+        ranked_closures: [],
+        hydrant_candidates: [],
+      },
+    }),
+  );
+
+  await page.goto("/");
+  await expect(page.locator("header p").filter({ hasText: /roads, 1 hydrants/i })).toBeVisible();
+  await page.locator(".map").click({ position: { x: 300, y: 300 } });
+  await page.getByRole("button", { name: /Recommend Closures/i }).click();
+
+  // Warning surfaces as a persistent banner (not the "Planner failed" error path)
+  // and the status reads "with warnings".
+  await expect(page.locator(".plan-warning")).toBeVisible();
+  await expect(page.locator(".plan-warning")).toContainText("hose envelope");
+  await expect(page.locator(".inline-status").filter({ hasText: /Plan ready with warnings/i })).toBeVisible();
+  await expect(page.getByText(/Planner failed/i)).toHaveCount(0);
+
+  // The map renders markers to canvas (preferCanvas), so assert the legend
+  // entry that accompanies the amber beyond-envelope hydrant ring instead of
+  // an SVG path.
+  await expect(page.locator(".map-legend .legend-swatch.envelope-exceeded")).toBeVisible();
+  await expect(page.getByText(/Hydrant beyond hose envelope/i)).toBeVisible();
+});

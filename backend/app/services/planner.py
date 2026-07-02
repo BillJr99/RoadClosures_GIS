@@ -229,10 +229,15 @@ def _perimeter_nodes(graph: Any, x: float, y: float, min_radius_m: float) -> lis
 
 
 def _edge_data(graph: Any, u: int, v: int) -> dict[str, Any]:
+    from collections.abc import Mapping
+
     data = graph.get_edge_data(u, v)
     if not data:
         return {}
-    if isinstance(data, dict) and all(isinstance(k, int) for k in data.keys()):
+    # Multigraph edge data is keyed by integer edge keys. Test for Mapping, not
+    # dict: graph views (e.g. to_undirected(as_view=True)) return AtlasView
+    # mappings, which are not dict instances.
+    if isinstance(data, Mapping) and all(isinstance(k, int) for k in data.keys()):
         return min(data.values(), key=lambda d: float(d.get("length", 1.0)))
     return data
 
@@ -328,8 +333,25 @@ def _hydrant_features() -> list[dict[str, Any]]:
     return read_geojson(RECONCILED_HYDRANTS_GEOJSON)["features"]
 
 
-def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, debug: dict[str, Any] | None = None) -> list[HydrantCandidate]:
+def _hydrant_candidates(
+    graph: Any,
+    req: IncidentPlanRequest,
+    fire_node: int,
+    debug: dict[str, Any] | None = None,
+    *,
+    search_radius_m: float | None = None,
+    max_length_m: float | None = None,
+) -> list[HydrantCandidate]:
     max_m = req.hose_max_ft * FT_TO_M
+    if search_radius_m is None:
+        search_radius_m = max_m * 1.35
+    if max_length_m is None:
+        max_length_m = max_m
+    # Hoses are laid on the ground and do not obey one-way restrictions, so
+    # route and measure over an undirected view. (On the directed graph a
+    # one-way street makes a nearby hydrant "unreachable", and get_edge_data
+    # returns nothing for a reverse-traversed edge so its length reads as 0.)
+    hose_graph = graph.to_undirected(as_view=True)
     incident_x, incident_y = _incident_xy(graph, req)
     incident_snap_m = _node_distance_m(graph, fire_node, incident_x, incident_y)
     if debug is not None:
@@ -365,7 +387,7 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
         ys = [float(v) for v in ys_arr]
     else:
         xs, ys = [], []
-    within = _within_radius_indices(xs, ys, incident_x, incident_y, max_m * 1.35)
+    within = _within_radius_indices(xs, ys, incident_x, incident_y, search_radius_m)
     if debug is not None:
         debug["hydrant_filter"]["total_features"] = len(features)
         debug["hydrant_filter"]["rejected_non_point"] = non_point
@@ -382,8 +404,8 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
         direct_distance_m = math.hypot(hydrant_x - incident_x, hydrant_y - incident_y)
         try:
             hydrant_snap_m = _node_distance_m(graph, hydrant_node, hydrant_x, hydrant_y)
-            path = nx.shortest_path(graph, hydrant_node, fire_node, weight="length")
-            graph_length_m = _path_length(graph, path)
+            path = nx.shortest_path(hose_graph, hydrant_node, fire_node, weight="length")
+            graph_length_m = _path_length(hose_graph, path)
             # Full hose run = road path + the off-road gap at each end (hydrant
             # to road, road to incident). The hose envelope is the ONLY distance
             # limit (no separate hard-coded snap cap): a hydrant is reachable iff
@@ -393,13 +415,13 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
             if debug is not None:
                 debug["hydrant_filter"]["rejected_no_path"] += 1
             continue
-        if length_m > max_m:
+        if length_m > max_length_m:
             if debug is not None:
                 debug["hydrant_filter"]["rejected_route_length"] += 1
             continue
         curvature = _path_curvature(graph, path)
         elev_change = _path_elevation_change(graph, path)
-        max_grade = path_max_grade(graph, path)
+        max_grade = path_max_grade(hose_graph, path)
         score, breakdown = _hydrant_score(length_m, max_m, curvature, max_grade)
         candidates.append(
             HydrantCandidate(
@@ -421,6 +443,29 @@ def _hydrant_candidates(graph: Any, req: IncidentPlanRequest, fire_node: int, de
         if debug is not None:
             debug["hydrant_filter"]["accepted"] += 1
     return sorted(candidates, key=lambda item: item.score)
+
+
+def _fallback_hydrant_candidates(
+    graph: Any, req: IncidentPlanRequest, fire_node: int, debug: dict[str, Any]
+) -> list[HydrantCandidate]:
+    """Nearest road-reachable hydrants regardless of the hose envelope.
+
+    Used only when no hydrant fits within hose_max_ft: crews still need the
+    nearest water source (relay pumping, tanker shuttle), so the plan proceeds
+    with these flagged as exceeding the envelope instead of failing outright.
+    """
+    search_radius_m = max(req.hose_max_ft * FT_TO_M * 1.35, req.study_radius_ft * FT_TO_M)
+    fallback_debug: dict[str, Any] = {}
+    candidates = _hydrant_candidates(
+        graph,
+        req,
+        fire_node,
+        fallback_debug,
+        search_radius_m=search_radius_m,
+        max_length_m=math.inf,
+    )
+    debug["hydrant_filter_fallback"] = fallback_debug.get("hydrant_filter", {})
+    return sorted(candidates, key=lambda item: item.length_m)[: req.hydrant_count]
 
 
 def _class_cost(data: dict[str, Any]) -> float:
@@ -687,14 +732,34 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     }
 
     candidates = _hydrant_candidates(graph, req, fire_node, debug)
+    plan_warnings: list[str] = []
+    envelope_satisfied = bool(candidates)
     if not candidates:
         filter_details = debug.get("hydrant_filter", {})
-        raise ValueError(
-            f"No reachable hydrants found within {req.hose_max_ft:g} ft hose envelope. "
-            f"Checked {filter_details.get('total_features', 0)} hydrant feature(s); "
-            f"{filter_details.get('accepted', 0)} passed distance, snap, and route checks. "
-            f"Increase the hose envelope (Configuration → hose envelope feet) or move the "
-            f"incident closer to a hydrant."
+        counter_text = (
+            f"Checked {filter_details.get('total_features', 0)} hydrant feature(s): "
+            f"{filter_details.get('rejected_direct_distance', 0)} beyond straight-line range, "
+            f"{filter_details.get('rejected_route_length', 0)} with hose routes too long, "
+            f"{filter_details.get('rejected_no_path', 0)} unreachable by road."
+        )
+        # No hydrant fits the hose envelope. Fall back to the nearest hydrants
+        # reachable by road at all, flagged as exceeding the envelope, so the
+        # plan still gives crews closures and the closest water source.
+        candidates = _fallback_hydrant_candidates(graph, req, fire_node, debug)
+        if not candidates:
+            raise ValueError(
+                f"No reachable hydrants found within {req.hose_max_ft:g} ft hose envelope, "
+                f"and none reachable by road within the {req.study_radius_ft:g} ft study radius. "
+                f"{counter_text} "
+                f"Increase the hose envelope (Configuration → hose envelope feet) or move the "
+                f"incident closer to a hydrant."
+            )
+        nearest_ft = round(candidates[0].length_m * M_TO_FT, 1)
+        plan_warnings.append(
+            f"No hydrant is reachable within the {req.hose_max_ft:g} ft hose envelope. "
+            f"{counter_text} "
+            f"Showing the {len(candidates)} nearest road-reachable hydrant(s) instead; the closest "
+            f"hose run is {nearest_ft:g} ft ({round(nearest_ft - req.hose_max_ft, 1):g} ft over the envelope)."
         )
 
     selected_hydrants = candidates[: req.hydrant_count]
@@ -803,6 +868,8 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
                     "curvature": round(hydrant.curvature, 4),
                     "elevation_change_ft": round(hydrant.elevation_change_m * M_TO_FT, 1),
                     "max_grade": round(hydrant.max_grade, 5),
+                    "exceeds_envelope": not envelope_satisfied,
+                    "hose_deficit_ft": round(max(0.0, hydrant.length_m * M_TO_FT - req.hose_max_ft), 1),
                 },
             )
         )
@@ -814,7 +881,13 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     hydrant_features = []
     for index, hydrant in enumerate(selected_hydrants, start=1):
         feature = dict(hydrant.feature)
-        feature["properties"] = {**feature.get("properties", {}), "selected": True, "sequence": index}
+        feature["properties"] = {
+            **feature.get("properties", {}),
+            "selected": True,
+            "sequence": index,
+            "exceeds_envelope": not envelope_satisfied,
+            "hose_deficit_ft": round(max(0.0, hydrant.length_m * M_TO_FT - req.hose_max_ft), 1),
+        }
         hydrant_features.append(feature)
     hydrant_feature = hydrant_features[0]
     debug["selected_hydrants"] = debug["top_hydrant_candidates"][: len(selected_hydrants)]
@@ -825,6 +898,13 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         "cut_value": round(float(cut_value), 3),
         "feasible": feasible,
         "feasibility_note": feasibility_note,
+        "warnings": plan_warnings,
+        "hose_envelope": {
+            "satisfied": envelope_satisfied,
+            "hose_max_ft": req.hose_max_ft,
+            "nearest_hydrant_ft": round(candidates[0].length_m * M_TO_FT, 1),
+            "hydrant_filter": debug.get("hydrant_filter", {}),
+        },
         "selected_hydrant": hydrant_feature,
         "selected_hydrants": {"type": "FeatureCollection", "features": hydrant_features},
         "hose_route": hose_feature,

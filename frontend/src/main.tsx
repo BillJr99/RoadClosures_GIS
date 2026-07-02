@@ -30,6 +30,7 @@ import { API, jsonFetch } from "./api";
 import { fetchCachedLayerMeta } from "./layerCache";
 import { closureCsv, downloadCsv, openPrintableReport, signAndDeviceCsv } from "./export";
 import { filterPlanResources, resourceTotals, type ResourceCounts, type ResourceType } from "./resourcePriority";
+import { planStatusMessages } from "./planStatus";
 import type {
   FeatureCollection,
   GoldenDraft,
@@ -146,6 +147,7 @@ function App() {
   const [pendingRemoveScenarioId, setPendingRemoveScenarioId] = useState<string | null>(null);
   const [runningScenarioId, setRunningScenarioId] = useState<string | null>(null);
   const [plannerStatus, setPlannerStatus] = useState("");
+  const [planWarnings, setPlanWarnings] = useState<string[]>([]);
   const [scenarioStatus, setScenarioStatusMessage] = useState("");
   const [goldenStatus, setGoldenStatus] = useState("");
   const [showInactiveScenarios, setShowInactiveScenarios] = useState(false);
@@ -366,6 +368,7 @@ function App() {
     setHydrantCount(1);
     setPlan(null);
     setPlannerStatus("");
+    setPlanWarnings([]);
     setPendingIncidentRemove(false);
     setPlanVersion((version) => version + 1);
   }
@@ -412,6 +415,7 @@ function App() {
     setHydrantCount(1);
     setPlan(null);
     setPlannerStatus("");
+    setPlanWarnings([]);
     setPendingIncidentRemove(false);
     setPlanVersion((version) => version + 1);
     setMessage("Incident removed. Click the map to set incident.");
@@ -444,6 +448,7 @@ function App() {
       return;
     }
     setIsPlanning(true);
+    setPlanWarnings([]);
     setMessage("Calculating closure recommendations. This can take 10-30 seconds.");
     setPlannerStatus("Calculating closure recommendations...");
     setLoadToast("Running closure recommendations...");
@@ -484,11 +489,18 @@ function App() {
         setExpandedRunIds((ids) => new Set(ids).add(result.run_id!));
         await loadScenarioRuns();
       }
-      setMessage(`Plan ready: ${result.ranked_closures.length} closure recommendations.`);
-      setPlannerStatus(`Plan ready: ${result.ranked_closures.length} closure recommendation(s).`);
-      setLoadToast(`Recommendations ready: ${result.ranked_closures.length} closure recommendation(s).`);
+      const { status, warnings } = planStatusMessages(result);
+      setPlanWarnings(warnings);
+      setMessage(status);
+      setPlannerStatus(status);
+      setLoadToast(
+        warnings.length
+          ? `Recommendations ready with warnings: ${result.ranked_closures.length} closure recommendation(s).`
+          : `Recommendations ready: ${result.ranked_closures.length} closure recommendation(s).`
+      );
       window.setTimeout(() => setLoadToast(""), 4500);
     } catch (error) {
+      setPlanWarnings([]);
       setMessage(`Planner failed: ${error instanceof Error ? error.message : String(error)}`);
       setPlannerStatus(`Planner failed: ${error instanceof Error ? error.message : String(error)}`);
       setLoadToast(`Planner failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1150,6 +1162,13 @@ function App() {
             <ShieldAlert size={18} /> {isPlanning ? "Recommending..." : "Recommend Closures"}
           </button>
           {plannerStatus && <div className="inline-status">{plannerStatus}</div>}
+          {planWarnings.length > 0 && (
+            <div className="plan-warning" role="alert">
+              {planWarnings.map((warning, index) => (
+                <p key={index}>{warning}</p>
+              ))}
+            </div>
+          )}
           {lastRunSource === "incident" && renderRunBox(scenarioRun, "Recommendation run")}
         </section>
 

@@ -50,7 +50,9 @@ PLAN_CACHE_DIR = GENERATED_DIR / "plan_cache"
 # v2: overlay geometry now follows the road polyline (closures, hose, signs,
 # devices) instead of straight node-to-node lines.
 # v3: closure min-cut is distance-weighted toward the incident (tight cordon).
-PLAN_CACHE_VERSION = 3
+# v4: hose routing is undirected (one-way streets no longer block hoses) and
+# plans fall back to the nearest road-reachable hydrants beyond the envelope.
+PLAN_CACHE_VERSION = 4
 
 
 @dataclass(frozen=True)

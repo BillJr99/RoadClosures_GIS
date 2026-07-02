@@ -67,10 +67,14 @@ def enrich_graph_elevation(graph: Any, *, fetcher: ElevationFetcher = fetch_epqs
 
 
 def path_max_grade(graph: Any, path: list[int]) -> float:
+    from collections.abc import Mapping
+
     maximum = 0.0
     for i in range(len(path) - 1):
         data = graph.get_edge_data(path[i], path[i + 1]) or {}
-        if isinstance(data, dict) and all(isinstance(k, int) for k in data.keys()):
+        # Mapping, not dict: graph views return AtlasView mappings for
+        # multigraph edge data, which are not dict instances.
+        if isinstance(data, Mapping) and all(isinstance(k, int) for k in data.keys()):
             values = data.values()
         else:
             values = [data]

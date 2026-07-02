@@ -290,15 +290,20 @@ export function MapView({
               if (feature.geometry.type !== "Point") return null;
               const coords = feature.geometry.coordinates as [number, number];
               const props = feature.properties ?? {};
+              // Amber ring when the hydrant's hose run exceeds the envelope
+              // (fallback selection); matches `.legend-swatch.envelope-exceeded`.
+              const exceedsEnvelope = Boolean(props.exceeds_envelope);
+              const ringColor = exceedsEnvelope ? "#f59e0b" : "#38bdf8";
               return (
                 <CircleMarker
                   key={`selected-hydrant-${index}-${planVersion}`}
                   center={[coords[1], coords[0]]}
                   radius={10}
-                  pathOptions={{ color: "#38bdf8", weight: 4, fillColor: "#38bdf8", fillOpacity: 0.1 }}
+                  pathOptions={{ color: ringColor, weight: 4, fillColor: ringColor, fillOpacity: 0.1 }}
                 >
                   <Tooltip>
                     Selected hydrant {index + 1}: {String(props.name || props.source || "hydrant")}
+                    {exceedsEnvelope ? ` — exceeds hose envelope by ${props.hose_deficit_ft} ft` : ""}
                   </Tooltip>
                 </CircleMarker>
               );
@@ -311,6 +316,7 @@ export function MapView({
           <span><i className="legend-swatch incident" /> Incident</span>
           <span><i className="legend-swatch hydrant" /> Hydrant</span>
           <span><i className="legend-swatch selected-hydrant" /> Selected hydrant</span>
+          <span><i className="legend-swatch envelope-exceeded" /> Hydrant beyond hose envelope</span>
           <span><i className="legend-line hose" /> Hose path</span>
           <span><i className="legend-line closure-line" /> Closure</span>
           <span><i className="legend-swatch sign" /> Sign</span>
