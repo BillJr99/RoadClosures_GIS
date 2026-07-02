@@ -4,6 +4,7 @@ import {
   GeoJSON,
   MapContainer,
   Pane,
+  ScaleControl,
   TileLayer,
   Tooltip,
   useMap,
@@ -13,6 +14,7 @@ import L from "leaflet";
 import { CENTER } from "./api";
 import type { Incident, PlanLayers, PlanResponse } from "./types";
 import { computeColocationOffsets, pointFeatureKey, type LonLat } from "./colocation";
+import { incidentDistanceText } from "./distance";
 
 // The co-located point de-overlap math lives in ./colocation (pure, unit-tested
 // under jsdom). Re-exported here so existing importers of mapView keep working.
@@ -41,6 +43,34 @@ export function featureTooltip(feature: GeoJSON.Feature, fallback: string): stri
       fallback,
   );
   return props.deployment_label ? `${String(props.deployment_label)} · ${label}` : label;
+}
+
+// Lon/lat of a Point feature (our marker layers are all points), else null.
+function featureLonLat(feature: GeoJSON.Feature): [number, number] | null {
+  if (feature.geometry?.type !== "Point") return null;
+  const coords = feature.geometry.coordinates as number[];
+  return [coords[0], coords[1]];
+}
+
+// Bind a hover tooltip to a point marker that appends the live straight-line
+// distance to the current incident(s). The incident list is read from a ref on
+// each hover so distances stay correct without re-mounting the (large) marker
+// layers every time the incident moves.
+function bindPointTooltip(
+  feature: GeoJSON.Feature,
+  layer: L.Layer,
+  baseHtml: string,
+  incidentsRef: React.MutableRefObject<Incident[]>,
+): void {
+  layer.bindTooltip(baseHtml);
+  const lonLat = featureLonLat(feature);
+  if (!lonLat) return;
+  layer.on("mouseover", () => {
+    const distance = incidentDistanceText(lonLat[0], lonLat[1], incidentsRef.current);
+    layer.setTooltipContent(
+      distance ? `${baseHtml}<br><span class="tooltip-distance">${distance}</span>` : baseHtml,
+    );
+  });
 }
 
 function IncidentClick({
@@ -167,11 +197,23 @@ export function MapView({
       ),
     [displaySigns, displayDevices, displayPlanLayers],
   );
+  // Current incident(s) in placement order (primary first). Held in a ref so
+  // marker hover tooltips can read the latest positions without re-mounting the
+  // large hydrant/sign/device layers whenever the incident moves.
+  const incidents = React.useMemo<Incident[]>(
+    () => (incident ? [incident, ...secondaryIncidents] : []),
+    [incident, secondaryIncidents],
+  );
+  const incidentsRef = React.useRef<Incident[]>(incidents);
+  incidentsRef.current = incidents;
   return (
     <section className="map-panel">
       {loadToast && <div className="toast">{loadToast}</div>}
       <MapContainer center={CENTER} zoom={12} className="map" preferCanvas>
         <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        {/* Distance reference: an imperial scale bar (feet/miles, matching the
+            planner's units) so the map conveys a sense of distance at a glance. */}
+        <ScaleControl position="bottomleft" imperial metric={false} />
         <IncidentClick
           incident={incident}
           secondaryIncidentMode={secondaryIncidentMode}
@@ -196,7 +238,7 @@ export function MapView({
           <GeoJSON
             data={hydrants}
             pointToLayer={(_, latlng) => L.circleMarker(latlng, { radius: 4, color: "#1677a3", fillOpacity: 0.8 })}
-            onEachFeature={(feature, layer) => layer.bindTooltip(`Hydrant: ${featureTooltip(feature, "hydrant")}`)}
+            onEachFeature={(feature, layer) => bindPointTooltip(feature, layer, `Hydrant: ${featureTooltip(feature, "hydrant")}`, incidentsRef)}
           />
         )}
         {displayPlanLayers?.other.features.length ? (
@@ -230,7 +272,7 @@ export function MapView({
             pointToLayer={(feature, latlng) =>
               L.circleMarker(applyOffset(feature, latlng, colocationOffsets), { radius: 7, color: "#7c3aed", fillColor: "#a855f7", fillOpacity: 0.9, weight: 2 })
             }
-            onEachFeature={(feature, layer) => layer.bindTooltip(`Advisory sign ${String(feature.properties?.mutcd_sign_code ?? "")}: ${featureTooltip(feature, "sign")}`)}
+            onEachFeature={(feature, layer) => bindPointTooltip(feature, layer, `Advisory sign ${String(feature.properties?.mutcd_sign_code ?? "")}: ${featureTooltip(feature, "sign")}`, incidentsRef)}
           />
         )}
         {displayDevices && (
@@ -244,7 +286,7 @@ export function MapView({
                 : L.circleMarker(position, { radius: 4, color: "#c2410c", fillColor: "#f97316", fillOpacity: 0.9, weight: 1 });
             }}
             onEachFeature={(feature, layer) =>
-              layer.bindTooltip(`${String(feature.properties?.device_type ?? "device")}: ${featureTooltip(feature, "device")}`)
+              bindPointTooltip(feature, layer, `${String(feature.properties?.device_type ?? "device")}: ${featureTooltip(feature, "device")}`, incidentsRef)
             }
           />
         )}
@@ -304,6 +346,12 @@ export function MapView({
                   <Tooltip>
                     Selected hydrant {index + 1}: {String(props.name || props.source || "hydrant")}
                     {exceedsEnvelope ? ` — exceeds hose envelope by ${props.hose_deficit_ft} ft` : ""}
+                    {incidents.length ? (
+                      <>
+                        <br />
+                        <span className="tooltip-distance">{incidentDistanceText(coords[0], coords[1], incidents)}</span>
+                      </>
+                    ) : null}
                   </Tooltip>
                 </CircleMarker>
               );
@@ -322,6 +370,8 @@ export function MapView({
           <span><i className="legend-swatch sign" /> Sign</span>
           <span><i className="legend-swatch barricade" /> Barricade</span>
           <span><i className="legend-swatch device" /> Channelizing device</span>
+          <span className="legend-hint">Scale bar (lower-left) shows distance.</span>
+          <span className="legend-hint">Hover a point for its distance to the incident.</span>
         </div>
       )}
     </section>

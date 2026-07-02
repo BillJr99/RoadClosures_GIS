@@ -404,6 +404,40 @@ def _hydrant_candidates(
         debug["hydrant_filter"]["total_features"] = len(features)
         debug["hydrant_filter"]["rejected_non_point"] = non_point
         debug["hydrant_filter"]["rejected_direct_distance"] = len(kept) - len(within)
+        # Source diagnostics: where the hydrant data came from and where the
+        # nearest hydrant actually is (straight-line, regardless of the hose
+        # envelope). This lets a "0 hydrants" failure in the log be told apart
+        # from a "hydrants exist but out of range" one without a debugger: an
+        # empty/mis-built data file shows loaded=0, while a far incident shows
+        # the nearest hydrant's coordinates and distance.
+        source_info: dict[str, Any] = {
+            "path": str(RECONCILED_HYDRANTS_GEOJSON),
+            "loaded": len(kept),
+            "non_point": non_point,
+            "within_search_radius": len(within),
+            "search_radius_ft": round(search_radius_m * M_TO_FT, 1),
+        }
+        if lons:
+            source_info["extent_lonlat"] = [
+                round(min(lons), 6),
+                round(min(lats), 6),
+                round(max(lons), 6),
+                round(max(lats), 6),
+            ]
+            nearest_i = min(
+                range(len(kept)),
+                key=lambda i: math.hypot(xs[i] - incident_x, ys[i] - incident_y),
+            )
+            nearest_m = math.hypot(xs[nearest_i] - incident_x, ys[nearest_i] - incident_y)
+            nearest_props = kept[nearest_i].get("properties", {})
+            source_info["nearest_hydrant"] = {
+                "lon": round(lons[nearest_i], 6),
+                "lat": round(lats[nearest_i], 6),
+                "straight_line_ft": round(nearest_m * M_TO_FT, 1),
+                "name": nearest_props.get("name", ""),
+                "source": nearest_props.get("source", ""),
+            }
+        debug["hydrant_source"] = source_info
 
     survivor_xs = [xs[i] for i in within]
     survivor_ys = [ys[i] for i in within]
@@ -745,14 +779,42 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
 
     x, y = _incident_xy(graph, req)
     fire_node = _nearest_node(graph, req.lon, req.lat)
+    incident_snap_m = _node_distance_m(graph, fire_node, x, y)
     debug["incident"] = {
         "lat": req.lat,
         "lon": req.lon,
         "nearest_node": fire_node,
+        "snap_ft": round(incident_snap_m * M_TO_FT, 1),
     }
+    # Log where the incident landed relative to the street network: the snap
+    # distance to the nearest road node plus the lon/lat extent of the loaded
+    # streets, so an incident placed outside the graph's coverage is obvious in
+    # the log. Node x/y are in the graph's projected CRS, so unproject the
+    # bounding corners back to WGS84 for a human-readable extent.
+    node_xs = [data["x"] for _, data in graph.nodes(data=True) if data.get("x") is not None]
+    node_ys = [data["y"] for _, data in graph.nodes(data=True) if data.get("y") is not None]
+    street_extent = None
+    if node_xs and node_ys:
+        to_wgs84 = _transformer_from_graph(graph)
+        (min_lon, max_lon), (min_lat, max_lat) = to_wgs84.transform(
+            [min(node_xs), max(node_xs)], [min(node_ys), max(node_ys)]
+        )
+        street_extent = [round(min_lon, 6), round(min_lat, 6), round(max_lon, 6), round(max_lat, 6)]
+    logger.info(
+        "Incident placed: lat=%.6f lon=%.6f snapped %.1f ft to nearest road node %s; "
+        "street graph nodes=%d edges=%d extent_lonlat=%s",
+        req.lat,
+        req.lon,
+        incident_snap_m * M_TO_FT,
+        fire_node,
+        graph.number_of_nodes(),
+        graph.number_of_edges(),
+        street_extent,
+    )
 
     candidates = _hydrant_candidates(graph, req, fire_node, debug)
     logger.info("Hydrant filter: %s", debug.get("hydrant_filter"))
+    logger.info("Hydrant source: %s", debug.get("hydrant_source"))
     plan_warnings: list[str] = []
     envelope_satisfied = bool(candidates)
     if not candidates:
