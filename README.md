@@ -48,6 +48,51 @@ Quick manual test flow:
 5. Use the Scenarios panel to view seeded scenarios such as Norristown,
    Lansdale, and Limerick.
 
+## Start/stop scripts
+
+Once dependencies are installed (the backend virtualenv and `frontend/node_modules`,
+per the Quickstart above), two helper scripts start and stop both servers together
+from the repository root:
+
+```bash
+./run.sh    # start backend + frontend in the background
+./stop.sh   # stop both
+```
+
+`run.sh`:
+
+- Starts the backend with `PYTHONPATH=backend uvicorn app.main:app --host <host> --port <port>`,
+  using the repo-root `.venv/bin/uvicorn` if present (otherwise `uvicorn` from `PATH`).
+- Starts the frontend with `npm run dev -- --host <host> --port <port>`.
+- Runs both in the background, recording process IDs in `backend.pid` / `frontend.pid`
+  and redirecting output to `backend.log` / `frontend.log` (all gitignored). It refuses
+  to start if a recorded process is still running — run `./stop.sh` first.
+
+`stop.sh` reads the PID files, terminates each process group (cleaning up the uvicorn
+reloader and Vite's child processes), escalates from `TERM` to `KILL` after a few
+seconds if needed, and removes the PID files.
+
+Host and port default to backend `0.0.0.0:8001` and frontend `0.0.0.0:5173`, and are
+overridable via environment variables:
+
+```bash
+BACKEND_HOST=127.0.0.1 BACKEND_PORT=9000 FRONTEND_PORT=3000 ./run.sh
+```
+
+| Variable        | Default   | Purpose                         |
+| --------------- | --------- | ------------------------------- |
+| `BACKEND_HOST`  | `0.0.0.0` | Backend uvicorn bind address    |
+| `BACKEND_PORT`  | `8001`    | Backend uvicorn port            |
+| `FRONTEND_HOST` | `0.0.0.0` | Frontend Vite bind address      |
+| `FRONTEND_PORT` | `5173`    | Frontend Vite dev server port   |
+
+> **Note:** `VITE_API_BASE` is baked into the frontend bundle at build/dev time, so if
+> you move the backend to a non-default host/port, set `VITE_API_BASE` accordingly (see
+> [Configuring server locations](#configuring-server-locations-non-localhost-deployments)).
+
+To run the servers manually instead (e.g. in separate terminals with `--reload`), see
+the [Development](#development) section below.
+
 ## Development
 
 Backend:

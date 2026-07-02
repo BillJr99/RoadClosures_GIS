@@ -13,9 +13,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-BACKEND_HOST="0.0.0.0"
-BACKEND_PORT="8001"
-FRONTEND_PORT="5173"
+# Host/port are overridable from the environment, e.g.
+#   BACKEND_PORT=9000 FRONTEND_PORT=3000 ./run.sh
+BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
+BACKEND_PORT="${BACKEND_PORT:-8001}"
+FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 # Prefer the project virtualenv if present.
 if [[ -x "$ROOT/.venv/bin/uvicorn" ]]; then
@@ -38,6 +41,8 @@ if already_running "$ROOT/frontend.pid"; then
   exit 1
 fi
 
+# Record the direct child PID for each service. stop.sh walks the process tree
+# from these PIDs so it also cleans up their children (npm -> vite, etc.).
 echo "Starting backend on http://localhost:${BACKEND_PORT} ..."
 PYTHONPATH=backend "$UVICORN" app.main:app \
   --host "$BACKEND_HOST" --port "$BACKEND_PORT" \
@@ -45,7 +50,7 @@ PYTHONPATH=backend "$UVICORN" app.main:app \
 echo $! > "$ROOT/backend.pid"
 
 echo "Starting frontend on http://localhost:${FRONTEND_PORT} ..."
-( cd frontend && npm run dev -- --port "$FRONTEND_PORT" ) \
+( cd frontend && npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" ) \
   > "$ROOT/frontend.log" 2>&1 &
 echo $! > "$ROOT/frontend.pid"
 
