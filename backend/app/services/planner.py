@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,6 +23,8 @@ from app.services.plan_cache import graph_fingerprint, load_cached_plan, plan_ca
 from app.services.road_matching import enrich_graph_with_county_roads
 from app.services.warning_signs import coverage_summary, device_features, warning_sign_features
 
+
+logger = logging.getLogger("app.services.planner")
 
 M_TO_FT = 3.28084
 FT_TO_M = 1.0 / M_TO_FT
@@ -121,7 +124,16 @@ def _load_graph_for_incident(req: IncidentPlanRequest) -> tuple[Any, dict[str, A
     tile_result = _load_operational_tile(req)
     if tile_result is not None:
         return tile_result
-    graph, metadata = load_or_fetch_graph(req)
+    try:
+        graph, metadata = load_or_fetch_graph(req)
+    except Exception as e:
+        # Surface fetch failures (e.g. OSM unreachable, offline deployment) as a
+        # clear 422 with guidance instead of an opaque 500.
+        raise ValueError(
+            "No road graph covers this incident location and a fresh graph could "
+            "not be fetched from OpenStreetMap. Rebuild the layers/graph for this "
+            f"area or check network access. ({e.__class__.__name__}: {e})"
+        ) from e
     graph = enrich_graph_with_county_roads(graph)
     return graph, metadata
 
@@ -714,6 +726,13 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     }
     graph, graph_source = _load_graph_for_incident(req)
     debug["graph_source"] = graph_source
+    logger.info(
+        "Graph loaded: source=%s nodes=%d edges=%d fallback_reason=%s",
+        graph_source.get("source") or graph_source.get("graph_path"),
+        graph.number_of_nodes(),
+        graph.number_of_edges(),
+        graph_source.get("fallback_reason"),
+    )
 
     # Plan-result cache: same incident + parameters over the same graph returns
     # the identical result instantly, skipping the hydrant scan and min-cut.
@@ -721,6 +740,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     cached = load_cached_plan(cache_key)
     if cached is not None:
         cached["graph_source"] = {**(cached.get("graph_source") or {}), "plan_cache_hit": True}
+        logger.info("Plan cache hit: key=%s", cache_key)
         return cached
 
     x, y = _incident_xy(graph, req)
@@ -732,6 +752,7 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
     }
 
     candidates = _hydrant_candidates(graph, req, fire_node, debug)
+    logger.info("Hydrant filter: %s", debug.get("hydrant_filter"))
     plan_warnings: list[str] = []
     envelope_satisfied = bool(candidates)
     if not candidates:
@@ -745,7 +766,13 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         # No hydrant fits the hose envelope. Fall back to the nearest hydrants
         # reachable by road at all, flagged as exceeding the envelope, so the
         # plan still gives crews closures and the closest water source.
+        logger.warning(
+            "No hydrant within %g ft hose envelope; trying nearest-reachable fallback. %s",
+            req.hose_max_ft,
+            counter_text,
+        )
         candidates = _fallback_hydrant_candidates(graph, req, fire_node, debug)
+        logger.info("Hydrant fallback filter: %s", debug.get("hydrant_filter_fallback"))
         if not candidates:
             raise ValueError(
                 f"No reachable hydrants found within {req.hose_max_ft:g} ft hose envelope, "
@@ -764,6 +791,14 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
 
     selected_hydrants = candidates[: req.hydrant_count]
     selected = selected_hydrants[0]
+    logger.info(
+        "Selected %d hydrant(s) (envelope_satisfied=%s); best: name=%s source=%s hose_run_ft=%.1f",
+        len(selected_hydrants),
+        envelope_satisfied,
+        selected.feature.get("properties", {}).get("name", ""),
+        selected.feature.get("properties", {}).get("source"),
+        selected.length_m * M_TO_FT,
+    )
     debug["top_hydrant_candidates"] = [
         {
             "source": item.feature.get("properties", {}).get("source"),
@@ -817,6 +852,14 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         else "No finite closure set isolates the incident without crossing the protected hose route; widen the study radius or review the hose path."
     )
     closures = _closure_edges(flow, set(reachable), set(non_reachable))
+    logger.info(
+        "Min-cut done: cut_value=%.3f feasible=%s closures=%d",
+        float(cut_value),
+        feasible,
+        len(closures),
+    )
+    if not feasible:
+        logger.warning("Closure set infeasible: %s", feasibility_note)
     # Rank by road-class closure cost (base_capacity), not the distance-weighted
     # cut capacity, so a near major road still ranks above a far minor one.
     ranked = sorted(

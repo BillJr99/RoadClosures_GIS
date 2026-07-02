@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +17,8 @@ from app.services.field_report import (
 )
 from app.services.planner import plan_incident
 
+
+logger = logging.getLogger("app.services.scenario_runner")
 
 PlannerFn = Callable[[IncidentPlanRequest], dict[str, Any]]
 
@@ -129,6 +132,7 @@ def write_field_report(target_dir: Path, scenario: Any, plan: dict[str, Any]) ->
 
 
 def write_planner_failure_log(target_dir: Path, request: IncidentPlanRequest, error: str) -> None:
+    logger.error("Planner failure recorded in %s: %s", target_dir, error)
     target_dir.mkdir(parents=True, exist_ok=True)
     debug = {
         "request": request.model_dump(),

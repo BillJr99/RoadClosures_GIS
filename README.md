@@ -118,6 +118,36 @@ When CORS is opened to all sources, credentialed requests are disabled
 automatically (the CORS spec forbids `*` with credentials; the frontend uses plain
 fetches, so this is fine).
 
+### Backend logging
+
+The backend logs comprehensively to a rotating log file for after-the-fact
+debugging: `data/logs/backend.log` (5 MB per file, 5 rotated backups kept,
+ignored by git). Logging is configured in `backend/app/logging_setup.py` at
+app startup and also mirrors uvicorn's server/access logs into the same file,
+so one file tells the whole story of a request:
+
+- every `/plan` request with its parameters, duration, and outcome (success
+  with closure/warning counts, 422 with the reason, or an unexpected-crash
+  traceback)
+- which road graph was used (configured artifact, tile, cache, or fresh OSM
+  fetch) and why a fallback was taken
+- the hydrant filter counters (total checked, accepted, rejected by
+  straight-line distance / route length / no road path) and the
+  envelope-exceeded fallback when it triggers
+- min-cut results and infeasibility warnings, background job start/finish/
+  failure (with tracebacks), and GIS data-source fetch progress/failures
+
+Environment overrides:
+
+```bash
+LOG_LEVEL=DEBUG   # default INFO
+LOG_FILE=/var/log/firepolice/backend.log   # default data/logs/backend.log
+```
+
+Per-run planner failure details also continue to be written under
+`data/scenario_runs/<run>/planner_debug.{json,log}`, and every plan response
+carries a `_debug` block with the same diagnostics the log records.
+
 ## Rebuilding GIS Data
 
 Generated road and hydrant artifacts live under `data/generated/` and are

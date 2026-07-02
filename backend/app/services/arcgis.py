@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import requests
+
+logger = logging.getLogger("app.services.arcgis")
 
 
 def request_json(
@@ -80,5 +83,5 @@ def fetch_geojson_features(
             break
         features.extend(page)
         if progress_label:
-            print(f"[{progress_label}] fetched {len(features):,}/{total:,}")
+            logger.info("[%s] fetched %s/%s features", progress_label, f"{len(features):,}", f"{total:,}")
     return features

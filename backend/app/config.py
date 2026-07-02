@@ -45,6 +45,8 @@ SCENARIO_EXPERT_GOLDEN_DIR = SCENARIO_DIR / "goldens"
 GRAPH_CACHE_DIR = GENERATED_DIR / "graph_cache"
 GRAPH_TILES_DIR = GENERATED_DIR / "graph_tiles"
 PLAN_CACHE_DIR = GENERATED_DIR / "plan_cache"
+LOGS_DIR = DATA_ROOT / "logs"
+BACKEND_LOG_FILE = LOGS_DIR / "backend.log"
 
 # Bump to invalidate cached plan results after a scoring/algorithm change.
 # v2: overlay geometry now follows the road polyline (closures, hose, signs,
@@ -138,3 +140,4 @@ def ensure_data_dirs() -> None:
     SCENARIO_RUNS_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
     SCENARIO_EXPERT_GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
