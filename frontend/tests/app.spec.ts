@@ -60,6 +60,14 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   let scenarioRunCalled = false;
   let promoteCalled = false;
   let savedGolden: Record<string, unknown> | null = null;
+  // Gate the mocked scenario run so it does not resolve until the test has
+  // asserted the transient "Running scenario" loading state. Without this, the
+  // run resolves in ~100ms and the loading toast can be replaced by "Scenario
+  // ready" before the assertion polls for it, making the test flaky under load.
+  let releaseScenarioRun: () => void = () => {};
+  const scenarioRunGate = new Promise<void>((resolve) => {
+    releaseScenarioRun = resolve;
+  });
 
   await page.route("**/api/layers/roads", async (route) => {
     await route.fulfill({ json: roads });
@@ -125,7 +133,7 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   });
   await page.route("**/api/scenarios/scenario-new/run", async (route) => {
     scenarioRunCalled = true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await scenarioRunGate;
     await route.fulfill({
       json: {
         run_id: "20260624T120000Z",
@@ -391,6 +399,8 @@ test("exercises incident planning, geocoding, manual hydrants, layer rebuild, an
   await editedRow.getByTitle("Run scenario").click();
   await expect(page.getByText(/Running Edited Scenario/i)).toBeVisible();
   await expect(page.locator(".toast").filter({ hasText: /Running scenario: Edited Scenario/i })).toBeVisible();
+  // Loading state observed; let the mocked run resolve and complete.
+  releaseScenarioRun();
   await expect(page.getByText(/Scenario run: 1 result/i)).toBeVisible();
   await expect(page.locator(".toast").filter({ hasText: /Scenario ready: Edited Scenario/i })).toBeVisible();
   await expect(page.getByText(/Map: incident pin in red/i)).toBeVisible();
