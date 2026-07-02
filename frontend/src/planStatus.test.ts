@@ -28,13 +28,14 @@ describe("planStatusMessages", () => {
     expect(status).toContain("Plan ready:");
   });
 
-  it("surfaces hose-envelope warnings in the status", () => {
+  it("surfaces hose-envelope warnings in the status without duplicating them", () => {
     const warning =
       "No hydrant is reachable within the 300 ft hose envelope. Showing the 1 nearest road-reachable hydrant(s) instead.";
     const { status, warnings } = planStatusMessages(plan({ warnings: [warning] }));
     expect(warnings).toEqual([warning]);
     expect(status).toContain("Plan ready with warnings");
-    expect(status).toContain(warning);
+    // The banner shows the full warning text; the status line must stay short.
+    expect(status).not.toContain(warning);
     expect(status).not.toContain("Planner failed");
   });
 });

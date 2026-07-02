@@ -118,12 +118,14 @@ def test_zero_in_envelope_returns_warning_plan(monkeypatch) -> None:
     # must fall back to the nearest road-reachable hydrant with a warning
     # instead of raising (which the API turned into a 422).
     req = _request(hose_max_ft=300.0)
-    plan = _plan_with_patches(monkeypatch, req, [_hydrant_at(200.0)])
+    plan = _plan_with_patches(monkeypatch, req, [_hydrant_at(300.0), _hydrant_at(200.0)])
 
     assert plan["warnings"]
     assert "hose envelope" in plan["warnings"][0]
     assert plan["hose_envelope"]["satisfied"] is False
     assert plan["hose_envelope"]["nearest_hydrant_ft"] > req.hose_max_ft
+    # Nearest = the 200 m hydrant, not the 300 m one.
+    assert plan["hose_envelope"]["nearest_hydrant_ft"] == pytest.approx(200.0 * M_TO_FT, abs=0.5)
     props = plan["selected_hydrant"]["properties"]
     assert props["exceeds_envelope"] is True
     hose_props = plan["hose_route"]["properties"]

@@ -902,7 +902,9 @@ def plan_incident(req: IncidentPlanRequest) -> dict[str, Any]:
         "hose_envelope": {
             "satisfied": envelope_satisfied,
             "hose_max_ft": req.hose_max_ft,
-            "nearest_hydrant_ft": round(candidates[0].length_m * M_TO_FT, 1),
+            # Shortest hose run among the candidates (they are sorted by score
+            # on the normal path, so candidates[0] is not necessarily nearest).
+            "nearest_hydrant_ft": round(min(item.length_m for item in candidates) * M_TO_FT, 1),
             "hydrant_filter": debug.get("hydrant_filter", {}),
         },
         "selected_hydrant": hydrant_feature,
