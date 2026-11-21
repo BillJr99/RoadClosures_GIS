@@ -2,6 +2,8 @@
 
 Local development app for Montgomery County fire-police road closure planning.
 
+> **Experimental software.** This is a research and teaching prototype provided as is, with no warranty of any kind. It is not intended for production use, and its recommendations (hydrant selection, hose routing, road closures, warning signs and channelizing devices) must not be relied on for actual emergency response or traffic-control decisions. Always follow your agency's procedures, the MUTCD, and the judgment of trained personnel.
+
 The project keeps the original course/prototype files at the repository root as
 legacy references. New implementation code lives under `backend/` and
 `frontend/`.
@@ -1334,3 +1336,7 @@ git status
 Original source/reference materials such as packet DOCX files, scanned PDFs,
 prototype notebooks, and early Python scripts are kept in the parent directory
 outside the repo.
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).
